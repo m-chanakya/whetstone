@@ -1,0 +1,53 @@
+{
+ "id": "infection-spread",
+ "title": "Infection spread (cellular automata)",
+ "topic": "Graphs",
+ "difficulty": "hard",
+ "lang": "python",
+ "source": "OpenAI, 60-minute onsite",
+ "url": "https://www.1point3acres.com/interview/problems/company/openai/infection-spread-cellular-automata",
+ "overview": "A five-part escalating question. Interviewers expect a clean multi-source BFS for parts 1 and 2, then a careful simultaneous-update simulation for parts 3 and 4; part 5 is rarely reached. Clean code on the first three parts is usually a pass.\n\nGrid cells: 0 healthy, 1 infected, 2 immune. Neighbours are orthogonal only. Each part adds a rule to the previous ones; keep one file and build on it.",
+ "gates": [
+  {
+   "id": "g1",
+   "title": "Basic spread",
+   "entry": "days_to_infect",
+   "minutes": 12,
+   "prompt": "You are given an M x N grid. Each cell is 0 (healthy) or 1 (infected).\n\nEvery day, every infected cell infects all of its healthy orthogonal neighbours (up, down, left, right) at the same time. Cells infected today only start spreading tomorrow.\n\nWrite days_to_infect(grid) that returns the number of days until every cell is infected, or -1 if that can never happen. A grid that is already fully infected, or has no cells at all, takes 0 days.",
+   "tests": "[[[0,0,0],[0,1,0],[0,0,0]]] => 2\n[[[1,0,0],[0,0,0],[0,0,0]]] => 4\n[[[0,0],[0,0]]] => -1\n[[[1,1],[1,1]]] => 0\n[[[1,0,0,0,0,0,0]]] => 6\n[[[1,0,0,0,0,0,1]]] => 3\n[[]] => 0\n[[[1,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,1]]] => 5"
+  },
+  {
+   "id": "g2",
+   "title": "Immune cells",
+   "entry": "days_with_immune",
+   "minutes": 8,
+   "prompt": "Now some cells are 2 (immune). Immune cells are never infected and never spread the infection; they act as walls.\n\nWrite days_with_immune(grid) that returns the number of days until every healthy cell is infected, or -1 if at least one healthy cell can never be reached.",
+   "tests": "[[[1,2,0],[0,2,0],[0,2,0]]] => -1\n[[[1,2,0],[0,2,0],[0,0,0]]] => 6\n[[[1,0,2,0],[2,2,2,0]]] => -1\n[[[2,2],[2,2]]] => 0\n[[[1,2,0,0],[0,2,0,2],[0,0,0,2]]] => 7\n[[[0,0,0,0],[0,2,2,0],[0,2,1,0],[0,0,0,0]]] => 6\n[[[0,0,0],[0,1,0],[0,0,0]]] => 2"
+  },
+  {
+   "id": "g3",
+   "title": "Recovery after D days",
+   "entry": "days_until_stable",
+   "minutes": 15,
+   "prompt": "Infected cells now recover. An infected cell spreads for exactly D days and then becomes immune (2).\n\nEach day happens in this order: (1) every currently infected cell infects its healthy orthogonal neighbours; (2) every cell that was infected before today ages by one day, and any cell that has now been infected for D days becomes immune. Cells infected today have age 0 and do not age or spread until tomorrow. A cell that becomes immune does not spread on the day it recovers.\n\nWrite days_until_stable(grid, D) that returns the number of days until no infected cells remain. Initially infected cells have age 0 at the start of day 1. If there are no infected cells to begin with, return 0.",
+   "tests": "[[[0,0,0],[0,1,0],[0,0,0]],1] => 3\n[[[0,0,0],[0,1,0],[0,0,0]],3] => 5\n[[[1,0,0,0,0,0,0]],2] => 8\n[[[0,0],[0,0]],2] => 0\n[[[1,1],[1,1]],4] => 4\n[[[1,2,0],[0,2,0],[0,2,0]],1] => 3\n[[[1,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,1]],2] => 7\n[[[1,0,0,0,0,0,1]],1] => 4"
+  },
+  {
+   "id": "g4",
+   "title": "Infection threshold",
+   "entry": "days_with_threshold",
+   "minutes": 12,
+   "prompt": "Back to the Part 1 rules (no recovery; 2 is still immune), with one change: a healthy cell is infected on a given day only if at least K of its orthogonal neighbours are infected at the start of that day. All infections in a day happen simultaneously.\n\nWrite days_with_threshold(grid, K) that simulates until a day passes with no new infections, and returns [days, healthy_left]: the number of days on which at least one cell was infected, and how many healthy cells remain at the end.",
+   "tests": "[[[0,0,0],[0,1,0],[0,0,0]],1] => [2,0]\n[[[0,0,0],[0,1,0],[0,0,0]],2] => [0,8]\n[[[1,0,1],[0,0,0],[1,0,1]],2] => [2,0]\n[[[1,1,0,0],[1,0,0,0],[0,0,0,0]],2] => [1,8]\n[[[1,1],[1,1]],3] => [0,0]\n[[[1,0,0,0,0,0,1]],2] => [0,5]\n[[[1,2,0],[0,2,0],[0,0,0]],1] => [6,0]\n[[[0,0],[0,0]],1] => [0,4]"
+  },
+  {
+   "id": "g5",
+   "title": "One burn to limit the damage",
+   "entry": "min_loss_one_burn",
+   "minutes": 13,
+   "prompt": "Before the infection spreads (Part 2 rules: 1 spreads to 0, 2 is immune, no threshold, no recovery), you may burn at most one full row or one full column. Every healthy or infected cell on it is destroyed: each counts as one loss and afterwards behaves like an immune cell. Immune cells on the line are unaffected and cost nothing.\n\nWrite min_loss_one_burn(grid) that returns the minimum possible total loss, where the loss is the number of burned cells plus the number of cells that are infected once the spread has finished. Burning nothing is allowed.",
+   "tests": "[[[0,0,0],[0,1,0],[0,0,0]]] => 3\n[[[0,0],[0,0]]] => 0\n[[[1,0,0,0,0,0,0]]] => 1\n[[[1,2,0],[0,2,0],[0,2,0]]] => 2\n[[[1,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]]] => 3\n[[[1,2,0,0],[2,2,0,0],[0,0,0,0]]] => 1\n[[[1,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,0],[0,0,0,0,0,1]]] => 36\n[[]] => 0"
+  }
+ ],
+ "createdAt": "2026-10-07T06:00:00Z"
+}

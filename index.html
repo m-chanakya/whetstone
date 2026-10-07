@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Whetstone</title>
+<meta name="description" content="Interview practice notebook: gated coding questions, a real Python runtime, timed attempts, and feedback that adds up.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231D4ED8'/%3E%3Cpath d='M7 23 L13 9 L16 17 L19 9 L25 23' fill='none' stroke='%23fff' stroke-width='3' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="vendor/codemirror/codemirror.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#/">Whetstone</a>
+  <nav class="tabs" aria-label="Sections">
+    <a class="tab" href="#/" data-view="questions">Questions</a>
+    <a class="tab" href="#/analytics" data-view="analytics">Analytics</a>
+    <a class="tab" href="#/settings" data-view="settings">Settings</a>
+  </nav>
+  <div class="top-right">
+    <span class="save-state" id="saveState" aria-live="polite"></span>
+    <a class="btn primary" href="#/new">Add question</a>
+  </div>
+</header>
+<div class="banner" id="banner" hidden></div>
+<main id="app"><div class="loading">Opening your notebook…</div></main>
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script src="vendor/codemirror/codemirror.js"></script>
+<script src="vendor/codemirror/matchbrackets.js"></script>
+<script src="vendor/codemirror/closebrackets.js"></script>
+<script src="vendor/codemirror/placeholder.js"></script>
+<script src="vendor/codemirror/python.js"></script>
+<script src="vendor/codemirror/javascript.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
