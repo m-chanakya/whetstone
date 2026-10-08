@@ -7,9 +7,11 @@
 
 Standard library only. The database is one SQLite file; questions, submissions
 and feedback are JSON blobs inside it. Nothing here is ever sent to GitHub.
-Set ANTHROPIC_API_KEY (environment, or "anthropicApiKey" in <data>/config.json)
-and every submission is graded in real CPython and reviewed by Claude in the
-background.
+Every submission is graded in real CPython in the background and, when a
+reviewer is available, reviewed by Claude: either the Claude Code CLI (`claude`
+on PATH, signed in; this uses your Claude subscription) or the Anthropic API
+(ANTHROPIC_API_KEY in the environment, or "anthropicApiKey" in
+<data>/config.json). "reviewer" in config.json can force "claude-code" or "api".
 """
 import argparse
 import json
@@ -135,8 +137,15 @@ def summarize_question(q):
 
 
 class App:
-    def __init__(self, store, api_key, model):
-        self.store, self.api_key, self.model = store, api_key, model
+    def __init__(self, store, api_key, model, backend):
+        self.store, self.api_key, self.model, self.backend = store, api_key, model, backend
+
+    @property
+    def can_review(self):
+        return self.backend == "api" and bool(self.api_key) or self.backend == "claude-code"
+
+    def run_review(self, q, s):
+        return reviewer.review(q, s, self.api_key, self.model, self.backend, cwd=str(self.store.path.parent))
 
     def evaluate(self, sid):
         """Background: CPython grade, then Claude review."""
@@ -150,11 +159,11 @@ class App:
                 s["cpython"] = r
         except Exception as e:  # noqa: BLE001
             s["cpython"] = {"passed": 0, "total": 0, "cases": [], "error": "grader failed: %s" % e, "runtime": "cpython"}
-        s["status"] = "reviewing" if self.api_key else "done"
+        s["status"] = "reviewing" if self.can_review else "done"
         self.store.put_submission(s)
-        if self.api_key:
+        if self.can_review:
             try:
-                fb = reviewer.review(q, s, self.api_key, self.model)
+                fb = self.run_review(q, s)
                 self.store.put_feedback(sid, fb)
                 s["status"] = "done"
             except Exception as e:  # noqa: BLE001
@@ -205,7 +214,7 @@ class Handler(BaseHTTPRequestHandler):
         p = urlparse(self.path).path
         st = self.app.store
         if p == "/api/health":
-            return self._json(200, {"ok": True, "version": VERSION, "hasKey": bool(self.app.api_key), "model": self.app.model, "dataDir": str(st.path.parent)})
+            return self._json(200, {"ok": True, "version": VERSION, "hasKey": self.app.can_review, "reviewer": self.app.backend if self.app.can_review else "off", "model": self.app.model or (reviewer.DEFAULT_CLI_MODEL if self.app.backend == "claude-code" else reviewer.DEFAULT_MODEL), "dataDir": str(st.path.parent)})
         if p == "/api/index":
             return self._json(200, {"questions": [summarize_question(q) for q in st.questions()], "submissions": [summarize_submission(s) for s in st.submissions()]})
         if p.startswith("/api/questions/"):
@@ -257,10 +266,10 @@ class Handler(BaseHTTPRequestHandler):
             s = st.submission(sid)
             if not s:
                 return self._json(404, {"error": "not found"})
-            if not self.app.api_key:
-                return self._json(409, {"error": "No ANTHROPIC_API_KEY on the server. Set it in the environment or in config.json, then restart."})
+            if not self.app.can_review:
+                return self._json(409, {"error": "Reviews are off: install Claude Code and sign in, or set ANTHROPIC_API_KEY, then restart the server."})
             try:
-                fb = reviewer.review(st.question(s["questionId"]), s, self.app.api_key, self.app.model)
+                fb = self.app.run_review(st.question(s["questionId"]), s)
             except Exception as e:  # noqa: BLE001
                 return self._json(502, {"error": "review failed: %s" % str(e)[:300]})
             st.put_feedback(sid, fb)
@@ -307,9 +316,16 @@ def main():
         except json.JSONDecodeError:
             print("config.json is not valid JSON; ignoring", file=sys.stderr)
     key = os.environ.get("ANTHROPIC_API_KEY") or cfg.get("anthropicApiKey") or ""
-    model = os.environ.get("WHETSTONE_MODEL") or cfg.get("model") or reviewer.DEFAULT_MODEL
+    model = os.environ.get("WHETSTONE_MODEL") or cfg.get("model") or ""
+    want = (os.environ.get("WHETSTONE_REVIEWER") or cfg.get("reviewer") or "auto").lower()
+    if want == "auto":
+        backend = "api" if key else ("claude-code" if reviewer.claude_cli() else "api")
+    else:
+        backend = want
+    if backend == "claude-code" and not reviewer.claude_cli():
+        print("reviewer is set to claude-code but the `claude` command is not on PATH; reviews are off", file=sys.stderr)
     store = Store(data / "whetstone.db")
-    Handler.app = App(store, key, model)
+    Handler.app = App(store, key, model, backend)
     seed = data / "seed"
     if seed.is_dir():
         for p in sorted(seed.glob("*.json")):
@@ -322,7 +338,11 @@ def main():
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     print("Whetstone  http://%s:%d/" % ("localhost" if a.host == "127.0.0.1" else a.host, a.port))
     print("data       %s" % data)
-    print("reviews    %s" % ("on, model %s" % model if key else "off (no ANTHROPIC_API_KEY)"))
+    app = Handler.app
+    if app.can_review:
+        print("reviews    on via %s, model %s" % ("Claude Code (your subscription)" if backend == "claude-code" else "Anthropic API", model or (reviewer.DEFAULT_CLI_MODEL if backend == "claude-code" else reviewer.DEFAULT_MODEL)))
+    else:
+        print("reviews    off: install Claude Code and sign in (uses your Claude plan), or set ANTHROPIC_API_KEY")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

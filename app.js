@@ -439,7 +439,7 @@ async function openSubmission(q, gate, gi, s){
   const fbHost = h('div');
   const showStatus = () => { fbHost.replaceChildren(); if (s.feedback) fbHost.append(renderReview(s.feedback));
     else if (full.status === 'grading' || full.status === 'reviewing') fbHost.append(h('div',{class:'thinking'}, h('span',{class:'dot'}), full.status === 'grading' ? 'Grading in CPython…' : 'Claude is reviewing this part…'));
-    else fbHost.append(h('div',{class:'row'}, h('span',{class:'hist', text:full.status === 'review-failed' ? 'The review failed: ' + (full.reviewError || 'unknown error') : S.health && S.health.hasKey ? 'No review yet.' : 'Reviews are off: set ANTHROPIC_API_KEY for the server to turn them on.'}),
+    else fbHost.append(h('div',{class:'row'}, h('span',{class:'hist', text:full.status === 'review-failed' ? 'The review failed: ' + (full.reviewError || 'unknown error') : S.health && S.health.hasKey ? 'No review yet.' : 'Reviews are off: see Settings for how to turn them on.'}),
       S.health && S.health.hasKey && h('button',{class:'btn primary small', text:'Review with Claude now', onclick:async e => { e.target.disabled = true; fbHost.replaceChildren(h('div',{class:'thinking'}, h('span',{class:'dot'}), 'Claude is reading this submission…'));
         try { const fb = await API.review(s.id); s.feedback = fb; applySubmissionUpdate({...full, feedback:fb, status:'done'}); fbHost.replaceChildren(renderReview(fb)); } catch(err){ fbHost.replaceChildren(h('p',{class:'fail', text:err.message})); } }}))); };
   showStatus();
@@ -721,11 +721,12 @@ function renderSettings(){
     h('h2',{text:'Settings'}),
     h('section',null, h('h3',{text:'Local backend'}),
       h('p',null, 'All questions, code and feedback live in a SQLite file on your own machine, served by ', h('code',{text:'server.py'}), '. This page only talks to that server; nothing is stored on GitHub.'),
-      h('p',{class:hl ? 'ok' : 'fail', text:hl ? `Connected to ${Cfg.backend()} (data in ${hl.dataDir}; reviews ${hl.hasKey ? 'on, ' + hl.model : 'off'})` : `Not reachable at ${Cfg.backend()}. In the repo folder run: python server.py`}),
+      h('p',{class:hl ? 'ok' : 'fail', text:hl ? `Connected to ${Cfg.backend()} (data in ${hl.dataDir}; reviews ${hl.hasKey ? 'on via ' + (hl.reviewer === 'claude-code' ? 'Claude Code' : 'the API') : 'off'})` : `Not reachable at ${Cfg.backend()}. In the repo folder run: python server.py`}),
       h('label',{class:'field'}, h('span',{text:'Backend URL'}), h('input',{type:'url', id:'backendUrl', value:Cfg.get('backend'), placeholder:'http://localhost:8787'})),
       h('div',{class:'row'}, h('button',{class:'btn primary', text:'Save and reconnect', onclick:async () => { Cfg.set('backend', $('#backendUrl').value.trim()); await boot(); }}))),
     h('section',null, h('h3',{text:'Claude reviews'}),
-      h('p',null, 'The server reviews each submission after grading it when it has an API key: export ', h('code',{text:'ANTHROPIC_API_KEY'}), ' before starting it, or put ', h('code',{text:'{"anthropicApiKey": "sk-ant-…", "model": "claude-sonnet-5-5"}'}), ' in ', h('code',{text:'config.json'}), ' inside the data folder. The key never reaches this page.')),
+      h('p',{text:hl ? (hl.reviewer === 'claude-code' ? `Reviews run through Claude Code on this machine, on your Claude plan (model ${hl.model}).` : hl.reviewer === 'api' ? `Reviews run through the Anthropic API (model ${hl.model}).` : 'Reviews are off.') : ''}),
+      h('p',null, 'Two ways to turn them on. With a Claude Pro or Max plan: install Claude Code, run ', h('code',{text:'claude'}), ' once to sign in, then restart the server; it finds the ', h('code',{text:'claude'}), ' command and uses your plan, no API key needed. Or put an API key in ', h('code',{text:'config.json'}), ' in the data folder (', h('code',{text:'{"anthropicApiKey": "sk-ant-…"}'}), '), which is billed separately. Nothing about your account reaches this page.')),
     h('section',null, h('h3',{text:'Backup and restore'}),
       h('p',{text:'Export everything as one JSON file (keep it somewhere private), or import such a file to merge it in.'}),
       h('div',{class:'row'},

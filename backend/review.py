@@ -4,10 +4,51 @@ The rubric matches the one the page shows, so scores are comparable.
 """
 import json
 import os
+import shutil
+import subprocess
 import urllib.request
 from datetime import datetime, timezone
 
 DEFAULT_MODEL = "claude-sonnet-5-5"
+DEFAULT_CLI_MODEL = "sonnet"
+
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "overall": {"type": "integer", "minimum": 1, "maximum": 5},
+        "scores": {"type": "object", "properties": {k: {"type": "integer", "minimum": 1, "maximum": 5} for k in ("correctness", "efficiency", "edgeCases", "clarity", "extensibility")}, "required": ["correctness", "efficiency", "edgeCases", "clarity", "extensibility"]},
+        "time": {"type": "string"}, "space": {"type": "string"}, "summary": {"type": "string"},
+        "strengths": {"type": "array", "items": {"type": "string"}},
+        "issues": {"type": "array", "items": {"type": "object", "properties": {"skill": {"type": "string"}, "severity": {"type": "string"}, "note": {"type": "string"}, "fix": {"type": "string"}}, "required": ["skill", "severity", "note"]}},
+        "gaps": {"type": "array", "items": {"type": "string"}},
+        "nextStep": {"type": "string"},
+    },
+    "required": ["overall", "scores", "summary", "issues", "gaps", "nextStep"],
+}
+
+
+def claude_cli():
+    """Path to the Claude Code CLI if it is installed, else None."""
+    return shutil.which("claude")
+
+
+def ask_cli(prompt, model, cwd=None):
+    """Ask through Claude Code in print mode, which bills the user's Claude subscription."""
+    cmd = [claude_cli(), "-p", "--output-format", "json", "--json-schema", json.dumps(SCHEMA), "--tools", "",
+           "--max-turns", "1", "--no-session-persistence", "--model", model or DEFAULT_CLI_MODEL]
+    p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=300, cwd=cwd)
+    if p.returncode != 0:
+        raise RuntimeError("claude exited %d: %s" % (p.returncode, (p.stderr or p.stdout).strip()[-400:]))
+    out = json.loads(p.stdout)
+    if out.get("is_error"):
+        raise RuntimeError("claude: %s" % str(out.get("result"))[:400])
+    if out.get("structured_output"):
+        return out["structured_output"]
+    text = str(out.get("result") or "")
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0:
+        raise RuntimeError("claude returned no JSON: %s" % text[:200])
+    return json.loads(text[start:end + 1])
 
 SKILLS = {
     "correctness": ("Logic bugs", "The code gives wrong answers on valid input"),
@@ -125,12 +166,22 @@ def norm(raw, model):
 
 
 
-def review(question, submission, key, model=None):
-    """Return a normalized feedback dict for the submission, or raise."""
-    model = model or DEFAULT_MODEL
+def review(question, submission, key, model=None, backend="api", cwd=None):
+    """Return a normalized feedback dict for the submission, or raise.
+
+    backend "api" calls the Anthropic API with `key`; "claude-code" runs the
+    locally installed Claude Code CLI, which uses the Claude subscription the
+    user is logged in with there.
+    """
     gi = next((i for i, g in enumerate(question["gates"]) if g["id"] == submission["gateId"]), None)
     if gi is None:
         raise ValueError("gate not found")
-    fb = norm(ask(prompt_for(question, question["gates"][gi], gi, submission), key, model), model)
+    prompt = prompt_for(question, question["gates"][gi], gi, submission)
+    if backend == "claude-code":
+        model = model or DEFAULT_CLI_MODEL
+        fb = norm(ask_cli(prompt, model, cwd), "claude-code/" + model)
+    else:
+        model = model or DEFAULT_MODEL
+        fb = norm(ask(prompt, key, model), model)
     fb.update({"submissionId": submission["id"], "questionId": submission["questionId"], "gateId": submission["gateId"]})
     return fb
