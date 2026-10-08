@@ -28,8 +28,18 @@ SCHEMA = {
 
 
 def claude_cli():
-    """Path to the Claude Code CLI if it is installed, else None."""
-    return shutil.which("claude")
+    """Path to the Claude Code CLI if it is installed, else None.
+
+    Checks PATH first, then the places the native installer and Homebrew use,
+    since a server started by a launcher may not have the user's shell PATH.
+    """
+    found = shutil.which("claude")
+    if found:
+        return found
+    for p in (os.path.expanduser("~/.local/bin/claude"), "/opt/homebrew/bin/claude", "/usr/local/bin/claude"):
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return None
 
 
 def ask_cli(prompt, model, cwd=None):
