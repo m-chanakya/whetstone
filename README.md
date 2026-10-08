@@ -10,9 +10,15 @@ A private interview-practice notebook. The app code is public (this repo, served
 
 ## Run it
 
+One-time setup (clones into `~/Work/whetstone` and launches):
+
 ```
-git clone https://github.com/m-chanakya/whetstone
-cd whetstone
+curl -fsSL https://raw.githubusercontent.com/m-chanakya/whetstone/main/setup.sh | bash
+```
+
+After that: `~/Work/whetstone/whetstone.sh` starts the server and opens the browser (`stop`, `update`, `logs` also work). Or by hand:
+
+```
 export ANTHROPIC_API_KEY=sk-ant-...      # optional: turns on reviews
 python3 server.py                        # http://localhost:8787
 ```

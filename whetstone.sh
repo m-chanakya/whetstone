@@ -24,7 +24,7 @@ py() { command -v python3 >/dev/null 2>&1 && echo python3 || echo python; }
 running() { [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null; }
 
 open_url() {
-  if command -v open >/dev/null 2>&1; then open "$URL"
+  if command -v open >/dev/null 2>&1; then open "$URL" >/dev/null 2>&1 || true
   elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$URL" >/dev/null 2>&1 || true
   else echo "Open $URL in your browser."; fi
 }
