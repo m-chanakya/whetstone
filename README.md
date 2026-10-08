@@ -28,7 +28,16 @@ Python 3.10+ and nothing else; the server is standard library only. Data lives i
 
 Open `http://localhost:8787` and work there. The GitHub Pages copy at https://m-chanakya.github.io/whetstone/ is the same app; it talks to `http://localhost:8787` on whichever machine you open it from, so the server has to be running either way, and your data never leaves it.
 
-**Seeding.** Any `*.json` file dropped into `~/.whetstone/seed/` is imported on the next start (shape: `{"questions": [...], "submissions": [...]}`, the same as an export) and renamed `.imported`. Settings → Export JSON gives you a full private backup; Import merges one back.
+## Your data, as files
+
+Everything in `~/.whetstone` is meant to be handled without the UI:
+
+- `questions/<id>.md` — one Markdown file per question (front matter, then one `## Part N: title` section per gate with `entry:`, `minutes:`, the prompt, and a ```` ```tests ```` block). Add or edit files here and the server syncs them within seconds; edits in the UI are written back. `.json` works too.
+- `inbox/` — drop a question (`.md` or `.json`) or a backup/export file here and it is imported within seconds, then renamed `.imported`. `whetstone.sh add FILE…` does the copy for you.
+- `backup/latest.json` — full export, rewritten after every change, plus daily snapshots. If the database is ever missing or empty, the server restores from it automatically. `whetstone.sh backup` writes a timestamped export; `whetstone.sh restore FILE` merges one back.
+- `whetstone.db` — the SQLite database itself.
+
+Settings in the app has Export/Import buttons for the same files.
 
 ## Test case format
 

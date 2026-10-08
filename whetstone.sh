@@ -5,10 +5,15 @@
 #   ./whetstone.sh stop       stop the server
 #   ./whetstone.sh update     git pull, then start
 #   ./whetstone.sh logs       follow the server log
+#   ./whetstone.sh add FILE…  import question/backup files (.md or .json) now
+#   ./whetstone.sh backup     write a full export to ~/.whetstone/backup/ and print its path
+#   ./whetstone.sh restore F  merge a backup or export file back in
+#   ./whetstone.sh open       open the data folder in Finder/your file manager
 #
-# Data lives in ~/.whetstone (whetstone.db, config.json, seed/). Put your
-# Anthropic key in ~/.whetstone/config.json as {"anthropicApiKey": "sk-ant-..."}
-# or export ANTHROPIC_API_KEY before running this; without it reviews are off.
+# Data lives in ~/.whetstone: questions/ (one .md per question, edit freely),
+# inbox/ (drop files to import), backup/latest.json (restored automatically if
+# the database is ever empty), whetstone.db, config.json.
+# Reviews use Claude Code if installed and signed in, else ANTHROPIC_API_KEY.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,7 +22,7 @@ PORT="${WHETSTONE_PORT:-8787}"
 URL="http://localhost:$PORT"
 PID="$DATA/server.pid"
 LOG="$DATA/server.log"
-mkdir -p "$DATA/seed"
+mkdir -p "$DATA/seed" "$DATA/inbox" "$DATA/questions" "$DATA/backup"
 
 py() { command -v python3 >/dev/null 2>&1 && echo python3 || echo python; }
 
@@ -36,6 +41,18 @@ case "${1:-start}" in
     tail -f "$LOG" ;;
   update)
     git -C "$DIR" pull --ff-only && "$0" restart ;;
+  add|import)
+    shift; [ $# -gt 0 ] || { echo "usage: whetstone.sh add FILE..."; exit 1; }
+    for f in "$@"; do cp "$f" "$DATA/inbox/" && echo "queued $(basename "$f")"; done
+    if running; then echo "The server imports inbox files within a few seconds."; else echo "Imported on next start."; fi ;;
+  backup|export)
+    if running; then curl -fs "$URL/api/export" > "$DATA/backup/export-$(date +%Y%m%d-%H%M%S).json" && ls -t "$DATA"/backup/export-*.json | head -1
+    else echo "Start the server first, or copy $DATA/backup/latest.json"; exit 1; fi ;;
+  restore)
+    [ -n "${2:-}" ] || { echo "usage: whetstone.sh restore FILE.json"; exit 1; }
+    cp "$2" "$DATA/inbox/" && echo "queued $(basename "$2"); the server merges it within a few seconds (start it if it is not running)." ;;
+  open)
+    if command -v open >/dev/null 2>&1; then open "$DATA"; else echo "$DATA"; fi ;;
   restart)
     "$0" stop >/dev/null 2>&1 || true; "$0" start ;;
   start)
@@ -54,5 +71,5 @@ case "${1:-start}" in
     done
     echo "The server did not come up. Last log lines:"; tail -20 "$LOG"; exit 1 ;;
   *)
-    sed -n '2,10p' "$0"; exit 1 ;;
+    sed -n '2,14p' "$0"; exit 1 ;;
 esac

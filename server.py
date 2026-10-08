@@ -7,6 +7,11 @@
 
 Standard library only. The database is one SQLite file; questions, submissions
 and feedback are JSON blobs inside it. Nothing here is ever sent to GitHub.
+Files in the data folder are the simple way in and out: questions/<id>.md
+(or .json) sync both ways with the database, anything dropped in inbox/ is
+imported within seconds, and backup/latest.json is rewritten after every change
+and restored automatically when the database is empty.
+
 Every submission is graded in real CPython in the background and, when a
 reviewer is available, reviewed by Claude: either the Claude Code CLI (`claude`
 on PATH, signed in; this uses your Claude subscription) or the Anthropic API
@@ -27,6 +32,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from backend import qmd  # noqa: E402
 from backend import review as reviewer  # noqa: E402
 from backend import runner  # noqa: E402
 
@@ -121,6 +127,161 @@ class Store:
         return n
 
 
+class Files:
+    """Keeps the data folder readable and the database restorable without the UI.
+
+    <data>/questions/<id>.md|json   one file per question; edit or drop files here, they sync both ways
+    <data>/inbox/*.json|*.md        anything dropped here is imported within seconds, then renamed .imported
+    <data>/backup/latest.json       full export, rewritten after every change; daily snapshots next to it
+    """
+
+    def __init__(self, store, data):
+        self.store, self.data = store, data
+        self.qdir, self.inbox, self.bdir = data / "questions", data / "inbox", data / "backup"
+        for d in (self.qdir, self.inbox, self.bdir, data / "seed"):
+            d.mkdir(parents=True, exist_ok=True)
+        self.seen = {}        # question file path -> mtime we last read or wrote
+        self.dirty = False
+        self.lock = threading.Lock()
+
+    # ----- questions as files
+    def path_for(self, qid):
+        for ext in (".md", ".json"):
+            p = self.qdir / (qid + ext)
+            if p.exists():
+                return p
+        return self.qdir / (qid + ".md")
+
+    def write_question(self, q):
+        p = self.path_for(q["id"])
+        text = json.dumps(q, indent=1) + "\n" if p.suffix == ".json" else qmd.render(q)
+        if p.exists() and p.read_text() == text:
+            self.seen[p] = p.stat().st_mtime
+            return
+        p.write_text(text)
+        self.seen[p] = p.stat().st_mtime
+
+    def remove_question_file(self, qid):
+        for ext in (".md", ".json"):
+            p = self.qdir / (qid + ext)
+            if p.exists():
+                p.rename(p.with_suffix(ext + ".deleted"))
+                self.seen.pop(p, None)
+
+    def read_question_file(self, p):
+        text = p.read_text()
+        if p.suffix == ".json":
+            q = json.loads(text)
+            q["id"] = p.stem
+            return q
+        return qmd.parse(text, p.stem)
+
+    def scan_questions(self):
+        """Import question files that are new or changed since we last saw them."""
+        changed = []
+        present = set()
+        for p in sorted(list(self.qdir.glob("*.md")) + list(self.qdir.glob("*.json"))):
+            present.add(p)
+            mtime = p.stat().st_mtime
+            if self.seen.get(p) == mtime:
+                continue
+            try:
+                q = self.read_question_file(p)
+                if not q.get("title") or not isinstance(q.get("gates"), list):
+                    raise ValueError("needs a title and at least one part")
+                old = self.store.question(q["id"])
+                if old:
+                    q.setdefault("createdAt", old.get("createdAt"))
+                    for g in q["gates"]:
+                        og = next((x for x in old["gates"] if x["id"] == g["id"]), None)
+                        if og and not g.get("minutes"):
+                            g["minutes"] = og.get("minutes", 0)
+                q.setdefault("createdAt", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+                self.store.put_question(q)
+                self.seen[p] = mtime
+                changed.append(p.name)
+            except Exception as e:  # noqa: BLE001
+                self.seen[p] = mtime
+                print("questions/%s not loaded: %s" % (p.name, e), file=sys.stderr)
+        for p in [p for p in self.seen if p.parent == self.qdir and p not in present]:
+            del self.seen[p]   # file removed by hand: keep the DB copy (progress points at it); write it back
+            q = self.store.question(p.stem)
+            if q:
+                self.write_question(q)
+        return changed
+
+    def export_all_questions(self):
+        for q in self.store.questions():
+            self.write_question(q)
+
+    # ----- inbox
+    def scan_inbox(self):
+        n = 0
+        for d in (self.inbox, self.data / "seed"):
+            for p in sorted(list(d.glob("*.json")) + list(d.glob("*.md"))):
+                try:
+                    if p.suffix == ".md":
+                        q = qmd.parse(p.read_text(), p.stem)
+                        self.store.put_question(q)
+                        self.write_question(q)
+                        n += 1
+                    else:
+                        data = json.loads(p.read_text())
+                        if isinstance(data, dict) and "gates" in data and "questions" not in data:
+                            data = {"questions": [data]}
+                        n += self.store.import_(data)
+                        for q in data.get("questions", []):
+                            if q.get("id"):
+                                self.write_question(self.store.question(q["id"]))
+                    p.rename(p.with_name(p.name + ".imported"))
+                    print("imported %s" % p.name)
+                except Exception as e:  # noqa: BLE001
+                    print("could not import %s: %s" % (p.name, e), file=sys.stderr)
+                    p.rename(p.with_name(p.name + ".failed"))
+        return n
+
+    # ----- backup
+    def backup(self):
+        data = self.store.export()
+        text = json.dumps(data, indent=1) + "\n"
+        (self.bdir / "latest.json").write_text(text)
+        day = self.bdir / (datetime.now().strftime("%Y-%m-%d") + ".json")
+        day.write_text(text)
+        snaps = sorted(self.bdir.glob("20??-??-??.json"))
+        for old in snaps[:-30]:
+            old.unlink()
+
+    def restore_if_empty(self):
+        if self.store.questions() or self.store.submissions():
+            return False
+        latest = self.bdir / "latest.json"
+        if not latest.exists():
+            return False
+        n = self.store.import_(json.loads(latest.read_text()))
+        print("database was empty: restored %d record(s) from backup/latest.json" % n)
+        return True
+
+    def mark_dirty(self):
+        with self.lock:
+            self.dirty = True
+
+    def loop(self):
+        while True:
+            try:
+                changed = self.scan_questions()
+                n = self.scan_inbox()
+                with self.lock:
+                    dirty, self.dirty = self.dirty, False
+                if changed or n or dirty:
+                    self.backup()
+            except Exception as e:  # noqa: BLE001
+                print("sync error:", e, file=sys.stderr)
+            time.sleep(2)
+
+    def start(self):
+        threading.Thread(target=self.loop, daemon=True).start()
+
+
 def summarize_submission(s):
     run = s.get("cpython") or s.get("browser") or {}
     return {
@@ -137,8 +298,8 @@ def summarize_question(q):
 
 
 class App:
-    def __init__(self, store, api_key, model, backend):
-        self.store, self.api_key, self.model, self.backend = store, api_key, model, backend
+    def __init__(self, store, api_key, model, backend, files):
+        self.store, self.api_key, self.model, self.backend, self.files = store, api_key, model, backend, files
 
     @property
     def can_review(self):
@@ -170,6 +331,7 @@ class App:
                 s["status"] = "review-failed"
                 s["reviewError"] = str(e)[:300]
             self.store.put_submission(s)
+        self.files.mark_dirty()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -214,7 +376,7 @@ class Handler(BaseHTTPRequestHandler):
         p = urlparse(self.path).path
         st = self.app.store
         if p == "/api/health":
-            return self._json(200, {"ok": True, "version": VERSION, "hasKey": self.app.can_review, "reviewer": self.app.backend if self.app.can_review else "off", "model": self.app.model or (reviewer.DEFAULT_CLI_MODEL if self.app.backend == "claude-code" else reviewer.DEFAULT_MODEL), "dataDir": str(st.path.parent)})
+            return self._json(200, {"ok": True, "version": VERSION, "hasKey": self.app.can_review, "reviewer": self.app.backend if self.app.can_review else "off", "model": self.app.model or (reviewer.DEFAULT_CLI_MODEL if self.app.backend == "claude-code" else reviewer.DEFAULT_MODEL), "dataDir": str(st.path.parent), "questionsDir": str(self.app.files.qdir), "inboxDir": str(self.app.files.inbox), "backupDir": str(self.app.files.bdir)})
         if p == "/api/index":
             return self._json(200, {"questions": [summarize_question(q) for q in st.questions()], "submissions": [summarize_submission(s) for s in st.submissions()]})
         if p.startswith("/api/questions/"):
@@ -237,13 +399,18 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(q, dict) or q.get("id") != qid or not q.get("title") or not isinstance(q.get("gates"), list):
                 return self._json(400, {"error": "question needs id (matching the URL), title and gates"})
             self.app.store.put_question(q)
+            self.app.files.write_question(q)
+            self.app.files.mark_dirty()
             return self._json(200, summarize_question(q))
         return self._json(404, {"error": "no such route"})
 
     def do_DELETE(self):
         p = urlparse(self.path).path
         if p.startswith("/api/questions/"):
-            self.app.store.delete_question(unquote(p.split("/", 3)[3]))
+            qid = unquote(p.split("/", 3)[3])
+            self.app.store.delete_question(qid)
+            self.app.files.remove_question_file(qid)
+            self.app.files.mark_dirty()
             return self._json(200, {"ok": True})
         return self._json(404, {"error": "no such route"})
 
@@ -259,6 +426,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(404, {"error": "unknown question"})
             s["status"] = "grading"
             st.put_submission(s)
+            self.app.files.mark_dirty()
             threading.Thread(target=self.app.evaluate, args=(s["id"],), daemon=True).start()
             return self._json(201, summarize_submission(s))
         if p.startswith("/api/submissions/") and p.endswith("/review"):
@@ -275,9 +443,13 @@ class Handler(BaseHTTPRequestHandler):
             st.put_feedback(sid, fb)
             s["status"] = "done"
             st.put_submission(s)
+            self.app.files.mark_dirty()
             return self._json(200, fb)
         if p == "/api/import":
-            return self._json(200, {"imported": st.import_(self._body())})
+            n = st.import_(self._body())
+            self.app.files.export_all_questions()
+            self.app.files.mark_dirty()
+            return self._json(200, {"imported": n})
         return self._json(404, {"error": "no such route"})
 
     def _static(self, p):
@@ -325,19 +497,19 @@ def main():
     if backend == "claude-code" and not reviewer.claude_cli():
         print("reviewer is set to claude-code but the `claude` command is not on PATH; reviews are off", file=sys.stderr)
     store = Store(data / "whetstone.db")
-    Handler.app = App(store, key, model, backend)
-    seed = data / "seed"
-    if seed.is_dir():
-        for p in sorted(seed.glob("*.json")):
-            try:
-                n = store.import_(json.loads(p.read_text()))
-                print("seeded %d record(s) from %s" % (n, p.name))
-                p.rename(p.with_suffix(".json.imported"))
-            except Exception as e:  # noqa: BLE001
-                print("could not import", p, e, file=sys.stderr)
+    files = Files(store, data)
+    Handler.app = App(store, key, model, backend, files)
+    files.restore_if_empty()
+    files.scan_inbox()
+    changed = files.scan_questions()
+    if changed:
+        print("loaded %d question file(s) from %s" % (len(changed), files.qdir))
+    files.export_all_questions()
+    files.backup()
+    files.start()
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     print("Whetstone  http://%s:%d/" % ("localhost" if a.host == "127.0.0.1" else a.host, a.port))
-    print("data       %s" % data)
+    print("data       %s  (questions/ to add or edit, inbox/ to drop files, backup/latest.json to restore)" % data)
     app = Handler.app
     if app.can_review:
         print("reviews    on via %s, model %s" % ("Claude Code (your subscription)" if backend == "claude-code" else "Anthropic API", model or (reviewer.DEFAULT_CLI_MODEL if backend == "claude-code" else reviewer.DEFAULT_MODEL)))
