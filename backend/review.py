@@ -1,18 +1,13 @@
-"""Ask Claude for interview-style feedback on every submission that has none.
+"""Ask Claude for interview-style feedback on one submission.
 
-Needs ANTHROPIC_API_KEY in the environment. Writes data/feedback/<qid>/<sub>.json.
-Uses the same rubric as the page so scores are comparable wherever they came from.
+The rubric matches the one the page shows, so scores are comparable.
 """
 import json
 import os
-import sys
 import urllib.request
 from datetime import datetime, timezone
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-DATA = ROOT / "data"
-MODEL = os.environ.get("WHETSTONE_MODEL") or "claude-sonnet-5-5"
+DEFAULT_MODEL = "claude-sonnet-5-5"
 
 SKILLS = {
     "correctness": ("Logic bugs", "The code gives wrong answers on valid input"),
@@ -87,10 +82,10 @@ Skill ids:
 Give at most 6 issues, most important first. Describe fixes in words; do not rewrite the whole solution."""
 
 
-def ask(prompt, key):
+def ask(prompt, key, model):
     req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=json.dumps({"model": MODEL, "max_tokens": 2000, "messages": [{"role": "user", "content": prompt}]}).encode(),
+        os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com") + "/v1/messages",
+        data=json.dumps({"model": model, "max_tokens": 2000, "messages": [{"role": "user", "content": prompt}]}).encode(),
         headers={"content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01"},
     )
     with urllib.request.urlopen(req, timeout=180) as r:
@@ -107,7 +102,7 @@ def clamp(v, d):
         return d
 
 
-def norm(raw):
+def norm(raw, model):
     overall = clamp(raw.get("overall"), 0)
     if not overall:
         raise ValueError("no overall score")
@@ -120,7 +115,7 @@ def norm(raw):
                        "severity": i.get("severity") if i.get("severity") in ("high", "medium", "low") else "medium",
                        "note": str(i.get("note"))[:600], "fix": str(i.get("fix") or "")[:400]})
     return {
-        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "by": "action", "model": MODEL, "overall": overall,
+        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "by": "server", "model": model, "overall": overall,
         "scores": {k: clamp(sc.get(k), overall) for k in DIMS},
         "time": str(raw.get("time") or "")[:60], "space": str(raw.get("space") or "")[:60], "summary": str(raw.get("summary") or "")[:900],
         "strengths": [str(s)[:300] for s in (raw.get("strengths") or []) if s][:3], "issues": issues,
@@ -128,36 +123,14 @@ def norm(raw):
     }
 
 
-def main():
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
-        print("ANTHROPIC_API_KEY not set; skipping review")
-        return
-    n = 0
-    for p in sorted((DATA / "submissions").glob("*/*.json")):
-        sub = json.loads(p.read_text())
-        out = DATA / "feedback" / sub["questionId"] / (sub["id"] + ".json")
-        if out.exists():
-            continue
-        qp = DATA / "questions" / (sub["questionId"] + ".json")
-        if not qp.exists():
-            continue
-        q = json.loads(qp.read_text())
-        gi = next((i for i, g in enumerate(q["gates"]) if g["id"] == sub["gateId"]), None)
-        if gi is None:
-            continue
-        try:
-            fb = norm(ask(prompt_for(q, q["gates"][gi], gi, sub), key))
-        except Exception as e:  # noqa: BLE001
-            print("review failed for", p.name, ":", e, file=sys.stderr)
-            continue
-        fb.update({"submissionId": sub["id"], "questionId": sub["questionId"], "gateId": sub["gateId"]})
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(fb, indent=1) + "\n")
-        n += 1
-        print("reviewed", p.name, fb["overall"], "/5")
-    print("reviews written:", n)
 
 
-if __name__ == "__main__":
-    main()
+def review(question, submission, key, model=None):
+    """Return a normalized feedback dict for the submission, or raise."""
+    model = model or DEFAULT_MODEL
+    gi = next((i for i, g in enumerate(question["gates"]) if g["id"] == submission["gateId"]), None)
+    if gi is None:
+        raise ValueError("gate not found")
+    fb = norm(ask(prompt_for(question, question["gates"][gi], gi, submission), key, model), model)
+    fb.update({"submissionId": submission["id"], "questionId": submission["questionId"], "gateId": submission["gateId"]})
+    return fb

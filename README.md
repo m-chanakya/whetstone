@@ -1,22 +1,27 @@
 # Whetstone
 
-An interview practice notebook that runs entirely on GitHub Pages, with this repo as its database.
+A private interview-practice notebook. The app code is public (this repo, served on GitHub Pages); **every question, solution and review stays on your own machine** in a SQLite file behind a small local server.
 
-- **Questions with gates.** A question is a sequence of parts (gates), each with its own prompt, entry function, test cases and time budget. Code carries over from part to part, the way escalating interview questions work.
-- **Real Python in the browser.** Tests run in Pyodide (CPython compiled to WebAssembly, vendored under `vendor/pyodide`), so a run takes milliseconds and nothing leaves your machine. JavaScript questions run natively.
-- **Timed attempts.** One clock for the attempt, one per part. Submitting a part stores the code, its test results and both times.
-- **Everything is a file.** `data/questions/*.json`, `data/submissions/<question>/*.json`, `data/feedback/<question>/*.json`. The page writes them through the GitHub API with a token you keep in your browser.
-- **Automated eval.** On every push of a submission, a GitHub Action re-runs the tests in real CPython, asks Claude for interview-style feedback (if an `ANTHROPIC_API_KEY` secret exists), rebuilds `data/index.json` and commits the results.
-- **Analytics.** Where attempts stall, time against budget per part, code quality by dimension, recurring skill gaps, progress across attempts.
+- **Questions with gates.** A question is a sequence of parts, each with its own prompt, entry function, test cases and time budget. Code carries over from part to part, the way escalating interview questions work.
+- **Real Python in the browser.** Tests run in Pyodide (CPython compiled to WebAssembly) in milliseconds. The server re-grades every submission in real CPython.
+- **Timed attempts.** One clock for the attempt, one per part, with pause. Submitting a part stores the code, test results and both times.
+- **Claude reviews**, run by the local server with your API key: a 1–5 verdict, five quality dimensions (correctness, efficiency, edge cases, clarity, extensibility), named issues with fixes, and skill gaps that add up across questions.
+- **Analytics** aimed at the interview: readiness (first three parts clean, in time, at quality), where attempts stall by part, time against budget, quality by dimension and topic, recurring gaps, progress across attempts.
 
-## Setup
+## Run it
 
-1. Push this repo to GitHub (public or private) and enable Pages: Settings → Pages → Source: GitHub Actions. The `pages.yml` workflow deploys on every push to `main`.
-2. Create a fine-grained personal access token with **Contents: read and write** on this repo only. Open the site, go to Settings, paste it. It is stored in `localStorage` and sent only to `api.github.com`.
-3. Optional: add an `ANTHROPIC_API_KEY` repository secret so the Action reviews submissions. Optional: set a repository variable `WHETSTONE_MODEL` to pick the model.
-4. Optional: paste an Anthropic API key into the site's Settings for instant feedback in the page (also browser-only; calls go straight to `api.anthropic.com`).
+```
+git clone https://github.com/m-chanakya/whetstone
+cd whetstone
+export ANTHROPIC_API_KEY=sk-ant-...      # optional: turns on reviews
+python3 server.py                        # http://localhost:8787
+```
 
-Without a token the site is read-only: questions and submissions are kept in the browser, and Settings → "Push browser-only data to GitHub" moves them into the repo once a token is set.
+Python 3.10+ and nothing else; the server is standard library only. Data lives in `~/.whetstone/whetstone.db` (change with `--data DIR` or `WHETSTONE_DATA`). Instead of the environment variable you can put `{"anthropicApiKey": "sk-ant-...", "model": "claude-sonnet-5-5"}` in `~/.whetstone/config.json`.
+
+Open `http://localhost:8787` and work there. The GitHub Pages copy at https://m-chanakya.github.io/whetstone/ is the same app; it talks to `http://localhost:8787` on whichever machine you open it from, so the server has to be running either way, and your data never leaves it.
+
+**Seeding.** Any `*.json` file dropped into `~/.whetstone/seed/` is imported on the next start (shape: `{"questions": [...], "submissions": [...]}`, the same as an export) and renamed `.imported`. Settings → Export JSON gives you a full private backup; Import merges one back.
 
 ## Test case format
 
@@ -29,22 +34,15 @@ One per line, `JSON args => JSON expected`. Args are passed positionally; a non-
 
 Numbers compare with a 1e-9 tolerance; object keys are order-insensitive.
 
-## Scripts
-
-- `scripts/run_tests.py <submission.json>` runs one submission in CPython with a 5 s limit per case; `--all` grades everything without results.
-- `scripts/review.py` writes feedback for submissions that have none.
-- `scripts/build_index.py` rebuilds `data/index.json`.
-- `scripts/make_sample_question.py` regenerates the sample question from reference solutions.
-
 ## Layout
 
 ```
-index.html app.js app.css      the site
-vendor/pyodide, vendor/codemirror
-data/questions/<id>.json       {id,title,topic,difficulty,lang,source,url,overview,gates:[{id,title,entry,minutes,prompt,tests}]}
-data/submissions/<qid>/<id>.json  {id,questionId,gateId,attemptId,at,code,elapsedSec,gateSec,browser,cpython}
-data/feedback/<qid>/<id>.json  {overall,scores,issues,gaps,summary,...}
-data/index.json                what the page loads
-.github/workflows/eval.yml     CPython tests + Claude review + index
-.github/workflows/pages.yml    deploy
+index.html app.js app.css   the app (also deployed to GitHub Pages)
+vendor/codemirror           editor
+server.py                   local backend: static files + /api/*, SQLite store
+backend/runner.py           CPython grader, one isolated subprocess per test case, 5 s limit
+backend/review.py           Claude review prompt and normalizer
+.github/workflows/pages.yml deploys the app to Pages on push
 ```
+
+API (all JSON, localhost only): `GET /api/health`, `GET /api/index`, `GET|PUT|DELETE /api/questions/:id`, `GET /api/submissions/:id`, `POST /api/submissions`, `POST /api/submissions/:id/review`, `GET /api/export`, `POST /api/import`.

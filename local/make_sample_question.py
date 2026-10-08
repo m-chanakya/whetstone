@@ -290,8 +290,8 @@ question = {
     "createdAt": "2026-10-07T06:00:00Z",
 }
 
-out = Path(__file__).resolve().parent.parent / "data" / "questions" / "infection-spread.json"
-out.write_text(json.dumps(question, indent=1) + "\n")
+out = Path(__file__).resolve().parent / "seed" / "infection-spread.json"
+out.write_text(json.dumps({"questions": [question]}, indent=1) + "\n")
 print("wrote", out)
 for g in gates:
     print(g["id"], g["entry"])
