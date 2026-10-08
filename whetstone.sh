@@ -14,7 +14,7 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA="${WHETSTONE_DATA:-$HOME/.whetstone}"
 PORT="${WHETSTONE_PORT:-8787}"
-URL="http://localhost:$PORT/"
+URL="http://localhost:$PORT"
 PID="$DATA/server.pid"
 LOG="$DATA/server.log"
 mkdir -p "$DATA/seed"
