@@ -22,8 +22,10 @@ SCHEMA = {
         "issues": {"type": "array", "items": {"type": "object", "properties": {"skill": {"type": "string"}, "severity": {"type": "string"}, "note": {"type": "string"}, "fix": {"type": "string"}}, "required": ["skill", "severity", "note"]}},
         "gaps": {"type": "array", "items": {"type": "string"}},
         "nextStep": {"type": "string"},
+        "improvedCode": {"type": "string"},
+        "whyBetter": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["overall", "scores", "summary", "issues", "gaps", "nextStep"],
+    "required": ["overall", "scores", "summary", "issues", "gaps", "nextStep", "improvedCode", "whyBetter"],
 }
 
 
@@ -42,9 +44,9 @@ def claude_cli():
     return None
 
 
-def ask_cli(prompt, model, cwd=None):
+def ask_cli(prompt, model, cwd=None, schema=None):
     """Ask through Claude Code in print mode, which bills the user's Claude subscription."""
-    cmd = [claude_cli(), "-p", "--output-format", "json", "--json-schema", json.dumps(SCHEMA), "--tools", "",
+    cmd = [claude_cli(), "-p", "--output-format", "json", "--json-schema", json.dumps(schema or SCHEMA), "--tools", "",
            "--max-turns", "1", "--no-session-persistence", "--model", model or DEFAULT_CLI_MODEL]
     p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=300, cwd=cwd)
     if p.returncode != 0:
@@ -122,7 +124,9 @@ Reply with only one JSON object and nothing around it, in exactly this shape:
   "strengths": ["up to 3 short, specific strengths"],
   "issues": [{{"skill": "<one skill id from the list below>", "severity": "high" | "medium" | "low", "note": "what is wrong and where, one or two sentences", "fix": "what to do instead, one sentence"}}],
   "gaps": ["skill ids from the list below that this answer shows the candidate should practise; empty array if none"],
-  "nextStep": "one concrete thing to practise next, one sentence"
+  "nextStep": "one concrete thing to practise next, one sentence",
+  "improvedCode": "the candidate's code, revised the way a strong candidate would have written it for this part: same language, same entry function names, complete and runnable, keeping their approach where it is sound and fixing what is not; empty string only if the code is already as good as it reasonably gets",
+  "whyBetter": ["3 to 6 short bullets: each names one concrete change in improvedCode and the interview reason it is better (correctness, complexity, edge cases, readability, or room for the next part)"]
 }}
 
 "extensibility" means: is the code structured so the next part's rule can be added without a rewrite?
@@ -130,13 +134,13 @@ Reply with only one JSON object and nothing around it, in exactly this shape:
 Skill ids:
 {skills}
 
-Give at most 6 issues, most important first. Describe fixes in words; do not rewrite the whole solution."""
+Give at most 6 issues, most important first. In "issues" describe fixes in words; the full rewrite belongs in "improvedCode" only."""
 
 
-def ask(prompt, key, model):
+def ask(prompt, key, model, max_tokens=6000):
     req = urllib.request.Request(
         os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com") + "/v1/messages",
-        data=json.dumps({"model": model, "max_tokens": 2000, "messages": [{"role": "user", "content": prompt}]}).encode(),
+        data=json.dumps({"model": model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}]}).encode(),
         headers={"content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01"},
     )
     with urllib.request.urlopen(req, timeout=180) as r:
@@ -144,6 +148,30 @@ def ask(prompt, key, model):
     text = "".join(c.get("text", "") for c in j.get("content", []))
     start, end = text.find("{"), text.rfind("}")
     return json.loads(text[start:end + 1])
+
+
+class Reviewer:
+    """How to reach Claude: backend 'api' (key) or 'claude-code' (local CLI, subscription)."""
+
+    def __init__(self, backend="api", key="", model="", cwd=None):
+        self.backend, self.key, self.model, self.cwd = backend, key, model, cwd
+
+    @property
+    def available(self):
+        return (self.backend == "api" and bool(self.key)) or (self.backend == "claude-code" and bool(claude_cli()))
+
+    @property
+    def model_name(self):
+        return self.model or (DEFAULT_CLI_MODEL if self.backend == "claude-code" else DEFAULT_MODEL)
+
+    @property
+    def label(self):
+        return ("claude-code/" if self.backend == "claude-code" else "") + self.model_name
+
+    def ask_json(self, prompt, schema=None):
+        if self.backend == "claude-code":
+            return ask_cli(prompt, self.model_name, self.cwd, schema)
+        return ask(prompt, self.key, self.model_name)
 
 
 def clamp(v, d):
@@ -171,27 +199,19 @@ def norm(raw, model):
         "time": str(raw.get("time") or "")[:60], "space": str(raw.get("space") or "")[:60], "summary": str(raw.get("summary") or "")[:900],
         "strengths": [str(s)[:300] for s in (raw.get("strengths") or []) if s][:3], "issues": issues,
         "gaps": sorted({g for g in (raw.get("gaps") or []) if g in SKILLS}), "nextStep": str(raw.get("nextStep") or "")[:400],
+        "improvedCode": str(raw.get("improvedCode") or "")[:24000],
+        "whyBetter": [str(s)[:400] for s in (raw.get("whyBetter") or []) if s][:6],
     }
 
 
 
 
-def review(question, submission, key, model=None, backend="api", cwd=None):
-    """Return a normalized feedback dict for the submission, or raise.
-
-    backend "api" calls the Anthropic API with `key`; "claude-code" runs the
-    locally installed Claude Code CLI, which uses the Claude subscription the
-    user is logged in with there.
-    """
+def review(question, submission, reviewer_or_key, model=None, backend="api", cwd=None):
+    """Return a normalized feedback dict for the submission, or raise."""
+    rv = reviewer_or_key if isinstance(reviewer_or_key, Reviewer) else Reviewer(backend, reviewer_or_key, model, cwd)
     gi = next((i for i, g in enumerate(question["gates"]) if g["id"] == submission["gateId"]), None)
     if gi is None:
         raise ValueError("gate not found")
-    prompt = prompt_for(question, question["gates"][gi], gi, submission)
-    if backend == "claude-code":
-        model = model or DEFAULT_CLI_MODEL
-        fb = norm(ask_cli(prompt, model, cwd), "claude-code/" + model)
-    else:
-        model = model or DEFAULT_MODEL
-        fb = norm(ask(prompt, key, model), model)
+    fb = norm(rv.ask_json(prompt_for(question, question["gates"][gi], gi, submission)), rv.label)
     fb.update({"submissionId": submission["id"], "questionId": submission["questionId"], "gateId": submission["gateId"]})
     return fb

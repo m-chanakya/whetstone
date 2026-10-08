@@ -6,22 +6,27 @@
 #   ./whetstone.sh update     git pull, then start
 #   ./whetstone.sh logs       follow the server log
 #   ./whetstone.sh add FILE…  import question/backup files (.md or .json) now
-#   ./whetstone.sh backup     write a full export to ~/.whetstone/backup/ and print its path
+#   ./whetstone.sh backup     write a full export to data/backup/ and print its path
 #   ./whetstone.sh restore F  merge a backup or export file back in
 #   ./whetstone.sh open       open the data folder in Finder/your file manager
 #
-# Data lives in ~/.whetstone: questions/ (one .md per question, edit freely),
-# inbox/ (drop files to import), backup/latest.json (restored automatically if
-# the database is ever empty), whetstone.db, config.json.
+# Data lives in ./data inside this folder (ignored by git): questions/ (one .md
+# per question, edit freely), inbox/ (drop .md/.json to import, or .txt of a
+# pasted question for Claude to turn into one), backup/latest.json (restored
+# automatically if the database is ever empty), whetstone.db, config.json.
 # Reviews use Claude Code if installed and signed in, else ANTHROPIC_API_KEY.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DATA="${WHETSTONE_DATA:-$HOME/.whetstone}"
+DATA="${WHETSTONE_DATA:-$DIR/data}"
 PORT="${WHETSTONE_PORT:-8787}"
 URL="http://localhost:$PORT"
 PID="$DATA/server.pid"
 LOG="$DATA/server.log"
+if [ -d "$HOME/.whetstone" ] && [ ! -e "$DATA/whetstone.db" ] && [ "$DATA" != "$HOME/.whetstone" ]; then
+  mkdir -p "$(dirname "$DATA")"; [ -e "$DATA" ] && rmdir "$DATA" 2>/dev/null || true
+  [ -e "$DATA" ] || { mv "$HOME/.whetstone" "$DATA" && echo "Moved your data from ~/.whetstone to $DATA"; }
+fi
 mkdir -p "$DATA/seed" "$DATA/inbox" "$DATA/questions" "$DATA/backup"
 
 py() { command -v python3 >/dev/null 2>&1 && echo python3 || echo python; }

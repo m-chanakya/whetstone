@@ -309,16 +309,17 @@ function renderRun(r){
 }
 
 /* ---------- editor ---------- */
-function makeEditor(host, {value='', lang='python', onChange, placeholder='', readOnly=false, onRun}){
+function makeEditor(host, {value='', lang='python', onChange, placeholder='', readOnly=false, onRun, onSubmit, theme='default'}){
   if (window.CodeMirror){
     let silent = false;
     const cm = window.CodeMirror(host, {
       value, mode:lang === 'python' ? 'python' : 'javascript', lineNumbers:true, indentUnit:lang === 'python' ? 4 : 2, tabSize:4, indentWithTabs:false,
-      matchBrackets:true, autoCloseBrackets:!readOnly, placeholder, readOnly,
+      matchBrackets:true, autoCloseBrackets:!readOnly, placeholder, readOnly, theme, lineWrapping:readOnly,
       extraKeys:{
         Tab: c => c.somethingSelected() ? c.indentSelection('add') : c.replaceSelection(' '.repeat(c.getOption('indentUnit')),'end'),
         'Shift-Tab': c => c.indentSelection('subtract'), Esc: c => c.getInputField().blur(),
         'Cmd-Enter': () => onRun && onRun(), 'Ctrl-Enter': () => onRun && onRun(),
+        'Shift-Cmd-Enter': () => onSubmit && onSubmit(), 'Shift-Ctrl-Enter': () => onSubmit && onSubmit(),
       },
     });
     cm.getInputField().setAttribute('aria-label', readOnly ? 'Code' : 'Code editor. Press Escape to leave the editor.');
@@ -341,6 +342,15 @@ function renderReview(fb){
   if (fb.strengths && fb.strengths.length) body.append(h('div',null, h('div',{class:'label', text:'What worked'}), h('ul',null, fb.strengths.map(s => h('li',{text:s})))));
   if (fb.gaps && fb.gaps.length) body.append(h('div',{class:'gaps'}, h('span',{class:'label', text:'Counted toward your weak areas:'}), fb.gaps.map(g => h('span',{class:'mark', text:(SKILLS[g]||[g])[0]}))));
   if (fb.nextStep) body.append(h('p',{class:'next'}, h('strong',{text:'Practise next: '}), fb.nextStep));
+  if (fb.improvedCode && fb.improvedCode.trim()){
+    const host = h('div',{class:'editor short pad-ed'});
+    const det = h('details',{class:'improved', ontoggle:e => { if (e.target.open && !host.dataset.ready){ host.dataset.ready = '1'; makeEditor(host, {value:fb.improvedCode, lang:fb.lang || 'python', readOnly:true, theme:'pad'}); } }},
+      h('summary',null, h('strong',{text:'How a strong candidate would have written it'}), h('span',{class:'hist', text:'  (click to expand; not loaded into your editor)'})),
+      fb.whyBetter && fb.whyBetter.length && h('ul',{class:'why'}, fb.whyBetter.map(s => h('li',{text:s}))),
+      host,
+      h('div',{class:'row', style:'margin-top:8px'}, h('button',{class:'btn small', text:'Copy code', onclick:async e => { try { await navigator.clipboard.writeText(fb.improvedCode); e.target.textContent = 'Copied'; setTimeout(() => { e.target.textContent = 'Copy code'; }, 1500); } catch(err){ toast('Copy failed; select the code and copy it.'); } }})));
+    body.append(det);
+  }
   return h('div',{class:'review'},
     h('div',{class:'verdict'},
       h('div',null, h('div',{class:'big'}, String(fb.overall), h('small',{text:' of 5'})), h('div',{style:'font-weight:600', text:VERDICT[fb.overall]})),
@@ -368,7 +378,7 @@ function render(){
   if (timerInt){ clearInterval(timerInt); timerInt = null; }
   curEditor = null; app.replaceChildren();
   if (S.loading){ app.append(h('div',{class:'loading', text:'Opening your notebook…'})); return; }
-  if (r.view !== 'try') S.attempt = null;
+  if (r.view !== 'try'){ S.attempt = null; document.body.classList.remove('in-pad'); }
   if (r.view === 'questions') renderQuestions();
   else if (r.view === 'question') renderQuestion(r.qid);
   else if (r.view === 'try') renderTry(r.qid);
@@ -450,15 +460,16 @@ async function openSubmission(q, gate, gi, s){
   box.scrollIntoView({behavior:'smooth', block:'start'});
 }
 
-/* ---------- try ---------- */
+/* ---------- try (interview pad) ---------- */
 async function renderTry(qid){
   const q = await fetchQuestion(qid); if (!q){ app.append(h('p',{class:'none', text:'That question is not in the index.'})); return; }
   if (S.view !== 'try') return;
   if (!S.attempt || S.attempt.qid !== qid){
     const prev = attemptsOf(qid); const lastSub = prev.length ? prev[prev.length-1].subs.slice(-1)[0] : null;
-    S.attempt = {qid, id:tsId(), startedAt:Date.now(), gi:0, gateStartedAt:Date.now(), gateAcc:{}, code:'', results:{}, subs:{}, lastSub, done:false, pausedAt:0, pausedTotal:0};
+    S.attempt = {qid, id:tsId(), startedAt:Date.now(), gi:0, gateStartedAt:Date.now(), gateAcc:{}, code:'', results:{}, subs:{}, lastSub, done:false, pausedAt:0, pausedTotal:0, tab:'question', console:[]};
     if (q.lang === 'python') Runner.warm(m => { const el = $('#pyStatus'); if (el) el.textContent = m; });
   }
+  document.body.classList.add('in-pad');
   const a = S.attempt, gate = q.gates[a.gi];
   const now = () => (a.pausedAt || Date.now()) - a.pausedTotal;
   const tAll = h('span',{class:'timer'}), tGate = h('span',{class:'timer'});
@@ -469,61 +480,83 @@ async function renderTry(qid){
     const budget = q.gates.reduce((s,x) => s + (x.minutes||0), 0); tAll.classList.toggle('over', !!budget && all > budget*60);
   };
   tick(); timerInt = setInterval(tick, 1000);
-  const gatesNav = h('div',{class:'gates', role:'tablist'}, q.gates.map((g,i) => h('button',{class:'gate', role:'tab', 'aria-current':i === a.gi ? 'true' : null, onclick:() => switchGate(q, i)}, h('span',{class:'pip ' + gateStatus(a.subs[g.id])}), `${i+1}. ${g.title}`)));
-  const edHost = h('div',{class:'editor'});
-  const runOut = h('div',{id:'runOut'});
-  const left = h('div',{class:'col'},
+  const gatesNav = h('div',{class:'gates', role:'tablist'}, q.gates.map((g,i) => h('button',{class:'gate', role:'tab', 'aria-current':i === a.gi ? 'true' : null, title:g.title, onclick:() => switchGate(q, i)}, h('span',{class:'pip ' + gateStatus(a.subs[g.id])}), `${i+1}`)));
+  const topbar = h('div',{class:'padbar'},
+    h('a',{class:'btn quiet small', href:'#/q/' + qid, text:'← ' + (q.title.length > 38 ? q.title.slice(0,36) + '…' : q.title)}),
     gatesNav,
-    h('div',{class:'row'}, h('h3',{text:`Part ${a.gi+1}: ${gate.title}`}), h('span',{class:'spacer'}), gate.minutes && h('span',{class:'hist', text:`Budget ${gate.minutes} min`})),
-    h('div',{class:'prompt', text:gate.prompt}),
-    a.gi === 0 && q.overview && h('details',null, h('summary',{class:'label', style:'cursor:pointer', text:'Question overview'}), h('div',{class:'prompt', style:'margin-top:8px', text:q.overview})),
-    h('div',{class:'hist', text:gate.entry ? `Tests call ${gate.entry}(...)` : 'No entry function set on this part; tests cannot run.'}));
-  const right = h('div',{class:'col'},
-    h('div',{class:'row'},
-      h('div',{class:'timers'}, h('div',null, tGate, h('small',{text:'this part'})), h('div',null, tAll, h('small',{text:'whole attempt'}))),
-      h('span',{class:'spacer'}),
-      h('button',{class:'btn quiet small', id:'pauseBtn', text:a.pausedAt ? 'Resume' : 'Pause', onclick:() => { if (a.pausedAt){ a.pausedTotal += Date.now() - a.pausedAt; a.pausedAt = 0; } else a.pausedAt = Date.now(); $('#pauseBtn').textContent = a.pausedAt ? 'Resume' : 'Pause'; tick(); }}),
+    h('span',{class:'spacer'}),
+    h('div',{class:'timers'}, h('div',null, tGate, h('small',{text:`part ${a.gi+1}${gate.minutes ? ' / ' + gate.minutes + ' min' : ''}`})), h('div',null, tAll, h('small',{text:'total'}))),
+    h('button',{class:'btn quiet small', id:'pauseBtn', text:a.pausedAt ? 'Resume' : 'Pause', onclick:() => { if (a.pausedAt){ a.pausedTotal += Date.now() - a.pausedAt; a.pausedAt = 0; } else a.pausedAt = Date.now(); $('#pauseBtn').textContent = a.pausedAt ? 'Resume' : 'Pause'; tick(); }}),
+    h('button',{class:'btn quiet small', text:'Finish', onclick:() => finishAttempt(q)}));
+  const tabs = h('div',{class:'ptabs'},
+    h('button',{class:'ptab', 'aria-current':a.tab === 'question' ? 'true' : null, text:'Question', onclick:() => { a.tab = 'question'; render(); }}),
+    h('button',{class:'ptab', 'aria-current':a.tab === 'feedback' ? 'true' : null, onclick:() => { a.tab = 'feedback'; render(); }}, 'Feedback', Object.keys(a.subs).length ? h('span',{class:'count', text:String(Object.keys(a.subs).length)}) : null));
+  const left = h('aside',{class:'padleft'}, tabs, h('div',{class:'padscroll', id:'padleft'}));
+  const edHost = h('div',{class:'editor pad-ed'});
+  const console_ = h('div',{class:'console', id:'console'});
+  const right = h('section',{class:'padright'},
+    h('div',{class:'edbar'}, h('span',{class:'lang', text:LANGS[q.lang] || q.lang}), h('span',{class:'hist', id:'pyStatus'}), h('span',{class:'spacer'}),
       a.lastSub && !a.code && h('button',{class:'btn quiet small', text:'Load my last submission', onclick:async () => { const f = await fetchSubmission(a.lastSub); if (f.code){ a.code = f.code; curEditor.set(f.code); } }}),
-      h('span',{class:'hist', id:'pyStatus'})),
-    edHost,
-    h('div',{class:'row'},
-      h('button',{class:'btn', id:'runBtn', onclick:() => runCurrent(q)}, 'Run tests ', h('kbd',{text:'⌘↵'})),
-      h('button',{class:'btn primary', id:'submitBtn', text:`Submit part ${a.gi+1}`, onclick:() => submitCurrent(q)}),
-      h('span',{class:'spacer'}),
-      h('button',{class:'btn quiet small', text:'Finish attempt', onclick:() => finishAttempt(q)})),
-    runOut,
-    h('div',{id:'fbOut'}));
-  app.append(h('div',{class:'page-head'}, h('div',null, h('a',{class:'btn quiet small', href:'#/q/' + qid, text:q.title}), h('h2',{style:'margin-top:6px', text:'Attempt in progress'}))), h('div',{class:'try'}, left, right));
-  curEditor = makeEditor(edHost, {value:a.code, lang:q.lang, placeholder:'Build on the same file as you move through the parts.', onChange:v => { a.code = v; }, onRun:() => runCurrent(q)});
-  if (a.results[gate.id]) runOut.append(renderRun(a.results[gate.id]));
-  renderAttemptFeedback(q);
+      h('button',{class:'btn run', id:'runBtn', onclick:() => runCurrent(q)}, '▶ Run ', h('kbd',{text:'⌘↵'})),
+      h('button',{class:'btn primary', id:'submitBtn', onclick:() => submitCurrent(q)}, `Submit part ${a.gi+1} `, h('kbd',{text:'⇧⌘↵'}))),
+    edHost, console_);
+  app.append(topbar, h('div',{class:'pad'}, left, right));
+  renderPadLeft(q);
+  curEditor = makeEditor(edHost, {value:a.code, lang:q.lang, theme:'pad', placeholder:'# Build on the same file as you move through the parts.', onChange:v => { a.code = v; }, onRun:() => runCurrent(q), onSubmit:() => submitCurrent(q)});
+  renderConsole();
   curEditor.focus();
 }
-function renderAttemptFeedback(q, pending){
-  const a = S.attempt, out = $('#fbOut'); if (!a || !out) return;
-  const gid = a.fbFor || q.gates[a.gi].id, sub = a.subs[gid], gi = q.gates.findIndex(g => g.id === gid);
-  out.replaceChildren();
-  if (!sub) return;
-  const head = h('div',{class:'row', style:'margin-top:6px'}, h('h3',{text:`Part ${gi+1}: ${sub.feedback ? 'feedback' : pending || 'submitted'}`}), h('span',{class:'hist', text:`${fmtSec(sub.gateSec)}, ${sub.browser && sub.browser.total ? sub.browser.passed + '/' + sub.browser.total + ' tests' : 'not run'}`}));
-  out.append(head);
-  if (sub.feedback) out.append(renderReview(sub.feedback));
-  else if (pending) out.append(h('div',{class:'thinking'}, h('span',{class:'dot'}), pending));
-  else if (sub.reviewError) out.append(h('p',{class:'fail', text:'Review failed: ' + sub.reviewError}));
+function renderPadLeft(q){
+  const a = S.attempt, host = $('#padleft'); if (!a || !host) return;
+  const gate = q.gates[a.gi];
+  host.replaceChildren();
+  if (a.tab === 'question'){
+    host.append(h('h3',{text:`Part ${a.gi+1} of ${q.gates.length}: ${gate.title}`}), h('div',{class:'prompt', text:gate.prompt}));
+    host.append(h('p',{class:'hist', text:gate.entry ? `Tests call ${gate.entry}(...)` : 'No entry function set on this part.'}));
+    if (a.gi > 0) host.append(h('details',{class:'earlier'}, h('summary',{text:'Earlier parts'}), q.gates.slice(0, a.gi).map((g,i) => h('div',null, h('h4',{text:`Part ${i+1}: ${g.title}`}), h('div',{class:'prompt small', text:g.prompt})))));
+    if (q.overview) host.append(h('details',{class:'earlier', open:a.gi === 0}, h('summary',{text:'Overview'}), h('div',{class:'prompt small', text:q.overview})));
+  } else {
+    const ids = q.gates.map(g => g.id).filter(id => a.subs[id]);
+    if (!ids.length) host.append(h('p',{class:'none', text:'Submit a part and its review shows here.'}));
+    for (const id of ids.reverse()){
+      const sub = a.subs[id], gi = q.gates.findIndex(g => g.id === id);
+      host.append(h('h3',{text:`Part ${gi+1}: ${q.gates[gi].title}`}), h('p',{class:'hist', text:`${fmtSec(sub.gateSec)}, ${sub.browser && sub.browser.total ? sub.browser.passed + '/' + sub.browser.total + ' tests' : 'not run'}`}));
+      if (sub.feedback) host.append(renderReview(sub.feedback));
+      else if (sub.reviewError) host.append(h('p',{class:'fail', text:'Review failed: ' + sub.reviewError}));
+      else if (sub.pending) host.append(h('div',{class:'thinking'}, h('span',{class:'dot'}), sub.pending));
+      else host.append(h('p',{class:'hist', text:'No review for this part.'}));
+    }
+  }
+}
+function renderConsole(){
+  const a = S.attempt, c = $('#console'); if (!a || !c) return;
+  c.replaceChildren();
+  if (!a.console.length){ c.append(h('div',{class:'cline muted', text:'Run tests to see output here. ⌘↵ runs, ⇧⌘↵ submits the part.'})); return; }
+  for (const item of a.console.slice(-6)){
+    if (item.kind === 'busy'){ c.append(h('div',{class:'cline'}, h('span',{class:'dot'}), ' ' + item.text)); continue; }
+    const r = item.r;
+    c.append(h('div',{class:'cline head'}, h('span',{class:'muted', text:item.when + '  '}), r.error ? h('span',{class:'fail', text:'Error'}) : h('span',{class:r.passed === r.total ? 'ok' : 'fail', text:`${r.passed} of ${r.total} passed`}), h('span',{class:'muted', text:'   ' + [r.runtime, r.ms != null ? r.ms + ' ms' : ''].filter(Boolean).join(', ')})));
+    if (r.error) c.append(h('pre',{class:'cpre fail', text:r.error}));
+    for (const g of r.cases || []) c.append(h('div',{class:'cline ' + (g.pass ? 'ok' : 'fail')}, (g.pass ? '✓ ' : '✗ ') + g.raw, !g.pass && h('span',{class:'got', text:'   ' + (g.err ? 'threw: ' : 'got: ') + g.got})));
+    if (r.stdout) c.append(h('pre',{class:'cpre', text:r.stdout}));
+  }
+  c.scrollTop = c.scrollHeight;
 }
 function switchGate(q, i){
   const a = S.attempt; if (i === a.gi) return;
   a.code = curEditor ? curEditor.get() : a.code;
   const nowMs = (a.pausedAt || Date.now()) - a.pausedTotal;
   a.gateAcc[a.gi] = (a.gateAcc[a.gi] || 0) + (nowMs - a.gateStartedAt)/1000;
-  a.gi = i; a.gateStartedAt = nowMs; render();
+  a.gi = i; a.gateStartedAt = nowMs; a.tab = 'question'; render();
 }
 async function runCurrent(q){
-  const a = S.attempt, gate = q.gates[a.gi], out = $('#runOut'), btn = $('#runBtn'); if (!out || a.busy) return null;
+  const a = S.attempt, gate = q.gates[a.gi], btn = $('#runBtn'); if (!$('#console') || a.busy) return null;
   a.code = curEditor.get(); a.busy = true; btn.disabled = true;
-  out.replaceChildren(h('div',{class:'thinking'}, h('span',{class:'dot'}), h('span',{id:'runProg', text:'Running…'})));
-  const r = await runGate(q, gate, a.code, m => { const el = $('#runProg'); if (el) el.textContent = m; });
+  a.console.push({kind:'busy', text:'Running…'}); renderConsole();
+  const r = await runGate(q, gate, a.code, m => { const last = a.console[a.console.length-1]; if (last && last.kind === 'busy'){ last.text = m; renderConsole(); } });
   a.busy = false; a.results[gate.id] = r;
-  if (S.attempt === a && $('#runOut')){ $('#runOut').replaceChildren(renderRun(r)); $('#runBtn').disabled = false; }
+  a.console = a.console.filter(x => x.kind !== 'busy'); a.console.push({kind:'run', r, when:new Date().toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit',second:'2-digit'})});
+  if (S.attempt === a && $('#console')){ renderConsole(); $('#runBtn').disabled = false; }
   return r;
 }
 async function submitCurrent(q){
@@ -539,23 +572,24 @@ async function submitCurrent(q){
   a.subs[gate.id] = sub;
   const saved = await saveSubmission(sub);
   toast(`Part ${a.gi+1} submitted: ${r.error ? 'did not run' : r.passed + ' of ' + r.total + ' tests'}, ${fmtSec(sub.gateSec)}.`);
-  a.fbFor = gate.id;
   if (saved && S.health){
-    renderAttemptFeedback(q, S.health.hasKey ? 'grading in CPython, then Claude reviews it…' : 'grading in CPython…');
+    sub.pending = S.health.hasKey ? 'Grading in CPython, then Claude reviews it…' : 'Grading in CPython…';
     waitForEval(sub.id, full => {
-      if (full.feedback) sub.feedback = full.feedback;
-      if (full.status === 'review-failed') sub.reviewError = full.reviewError || 'unknown error';
-      if (S.attempt !== a || a.subs[gate.id] !== sub || a.fbFor !== gate.id) return;
-      const done = full.feedback || full.status === 'review-failed' || full.status === 'done' || (full.status === 'reviewing' && !S.health.hasKey);
-      renderAttemptFeedback(q, done ? '' : full.status === 'reviewing' ? 'Claude is reviewing it…' : 'grading in CPython…');
+      if (full.feedback){ sub.feedback = {...full.feedback, lang:q.lang}; sub.pending = ''; }
+      if (full.status === 'review-failed'){ sub.reviewError = full.reviewError || 'unknown error'; sub.pending = ''; }
+      else if (full.status === 'done' || (full.status === 'reviewing' && !S.health.hasKey)) sub.pending = full.feedback ? '' : '';
+      else if (full.status === 'reviewing') sub.pending = 'Claude is reviewing it…';
+      if (S.attempt === a && a.tab === 'feedback') renderPadLeft(q);
     });
-  } else renderAttemptFeedback(q);
+  }
   if (S.attempt !== a) return;
-  if (a.gi < q.gates.length - 1 && r && !r.error && r.passed === r.total){
+  const passed = r && !r.error && r.passed === r.total;
+  if (a.gi < q.gates.length - 1 && passed){
     const t2 = (a.pausedAt || Date.now()) - a.pausedTotal;
     a.gateAcc[a.gi] = (a.gateAcc[a.gi] || 0) + (t2 - a.gateStartedAt)/1000;
-    a.gi++; a.gateStartedAt = t2; render();
-  } else { sb.disabled = false; const nav = document.querySelector('.gates'); if (nav) nav.replaceWith(h('div',{class:'gates'}, q.gates.map((g,i) => h('button',{class:'gate', 'aria-current':i === a.gi ? 'true' : null, onclick:() => switchGate(q, i)}, h('span',{class:'pip ' + gateStatus(a.subs[g.id])}), `${i+1}. ${g.title}`)))); }
+    a.gi++; a.gateStartedAt = t2; a.tab = 'question'; render();
+    toast(`Part ${a.gi} passed. On to part ${a.gi+1}; the review lands under Feedback.`);
+  } else { a.tab = 'feedback'; render(); }
 }
 function finishAttempt(q){
   const a = S.attempt; const n = Object.keys(a.subs).length;
@@ -564,11 +598,19 @@ function finishAttempt(q){
 }
 
 /* ---------- edit / new ---------- */
+function renderDraftReport(d){
+  const rep = d.report;
+  return h('div',{class:'col', style:'gap:8px'}, h('div',{class:'run-out'}, h('div',{class:'run-head'}, h('span',{class:rep.ok ? 'ok' : 'fail', text:rep.ok ? 'Reference solution passes every test' : 'Some tests and the reference solution disagree; check them below'}), h('span',{class:'spacer'}), h('span',{class:'hist', text:`${rep.rounds} pass${rep.rounds > 1 ? 'es' : ''}`})),
+    rep.parts.map(p => h('div',{class:'case ' + (p.total && p.passed === p.total ? 'pass' : 'fail')}, h('span',{class:'st ' + (p.total && p.passed === p.total ? 'ok' : 'fail'), text:p.total && p.passed === p.total ? '✓' : '✗'}), h('pre',{text:`${p.title}: ${p.error || p.passed + '/' + p.total + ' tests'}` + (p.failed && p.failed.length ? '\n' + p.failed.map(f => '  ' + f.raw + '  ->  got ' + f.got).join('\n') : '')}))),
+    d.notes && h('pre',{class:'stdout', text:'Notes: ' + d.notes})),
+    h('details',null, h('summary',{class:'label', style:'cursor:pointer', text:'Reference solution (saved next to the question as <id>.solution.py when you save)'}), h('pre',{class:'stdout', style:'max-height:360px', text:d.solution})));
+}
 async function renderEdit(qid){
   let q = qid ? await fetchQuestion(qid) : null;
   if (S.view !== 'edit') return;
   const isNew = !q;
-  q = q ? clone(q) : {id:'', title:'', topic:'', difficulty:'medium', lang:'python', source:'', url:'', overview:'', gates:[{id:'g1', title:'Part 1', entry:'', minutes:15, prompt:'', tests:''}], createdAt:new Date().toISOString()};
+  const draftInfo = isNew ? S.draftInfo : null; S.draftInfo = null;
+  if (isNew && S.draftQ){ q = S.draftQ; S.draftQ = null; } else q = q ? clone(q) : {id:'', title:'', topic:'', difficulty:'medium', lang:'python', source:'', url:'', overview:'', gates:[{id:'g1', title:'Part 1', entry:'', minutes:15, prompt:'', tests:''}], createdAt:new Date().toISOString()};
   const opt = (v,t,cur) => h('option',{value:v, text:t, selected:v===cur});
   const gatesHost = h('div',{class:'col'});
   const drawGates = () => {
@@ -584,9 +626,30 @@ async function renderEdit(qid){
     gatesHost.append(h('button',{class:'btn small', style:'align-self:flex-start', text:'Add a part', onclick:() => { q.gates.push({id:'g' + (q.gates.length+1), title:`Part ${q.gates.length+1}`, entry:'', minutes:10, prompt:'', tests:''}); drawGates(); }}));
   };
   drawGates();
+  const draftOut = h('div');
+  const draftBox = isNew && h('details',{class:'draftbox', open:!q.title},
+    h('summary',null, h('strong',{text:'Paste the question text and let Claude build it'})),
+    h('p',{class:'hist', text:'Paste the whole thing from the forum or the interviewer notes, follow-ups included. Claude writes the parts, entry functions and test cases, and a reference solution that the server runs against every test before you see it. Then you can edit anything below and save.'}),
+    h('textarea',{id:'draftText', rows:'8', placeholder:'Paste the question here…'}),
+    h('div',{class:'row'}, h('input',{type:'text', id:'draftHint', placeholder:'Optional guidance: language, how many parts, what to emphasise', style:'flex:1;min-width:220px'}),
+      h('button',{class:'btn primary', id:'draftBtn', disabled:!(S.health && S.health.hasKey), text:'Draft with Claude', onclick:async e => {
+        const text = $('#draftText').value; if (text.trim().length < 40){ toast('Paste the question first.'); return; }
+        e.target.disabled = true; draftOut.replaceChildren(h('div',{class:'thinking'}, h('span',{class:'dot'}), 'Claude is writing the parts and tests, then the server runs the reference solution against them. One to three minutes.'));
+        try {
+          const d = await API.call('POST', '/api/questions/draft', {text, hint:$('#draftHint').value});
+          Object.assign(q, d.question); q.createdAt = q.createdAt || new Date().toISOString();
+          q.solution = d.solution; S.draftQ = q; S.draftInfo = d;
+          render(); toast('Drafted. Review the parts below, then save.');
+        } catch(err){ draftOut.replaceChildren(h('p',{class:'fail', text:err.message})); }
+        e.target.disabled = false;
+      }})),
+    !(S.health && S.health.hasKey) && h('p',{class:'hist', text:'Drafting needs Claude on the server: see Settings.'}),
+    draftOut);
   const form = h('div',{class:'form'},
     h('h2',{text:isNew ? 'Add a question' : 'Edit question'}),
-    h('label',{class:'field'}, h('span',{text:'Title'}), h('input',{type:'text', value:q.title, oninput:e => { q.title = e.target.value; }})),
+    draftBox,
+    draftInfo && renderDraftReport(draftInfo),
+    h('label',{class:'field'}, h('span',{text:'Title'}), h('input',{type:'text', id:'qTitle', value:q.title, oninput:e => { q.title = e.target.value; }})),
     h('div',{class:'meta'},
       h('label',{class:'field'}, h('span',{text:'Topic'}), h('input',{type:'text', value:q.topic, placeholder:'Graphs, DP, Design…', oninput:e => { q.topic = e.target.value.trim(); }})),
       h('label',{class:'field'}, h('span',{text:'Difficulty'}), h('select',{onchange:e => { q.difficulty = e.target.value; }}, opt('easy','Easy',q.difficulty), opt('medium','Medium',q.difficulty), opt('hard','Hard',q.difficulty))),

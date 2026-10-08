@@ -5,7 +5,9 @@ A private interview-practice notebook. The app code is public (this repo, served
 - **Questions with gates.** A question is a sequence of parts, each with its own prompt, entry function, test cases and time budget. Code carries over from part to part, the way escalating interview questions work.
 - **Real Python in the browser.** Tests run in Pyodide (CPython compiled to WebAssembly) in milliseconds. The server re-grades every submission in real CPython.
 - **Timed attempts.** One clock for the attempt, one per part, with pause. Submitting a part stores the code, test results and both times.
-- **Claude reviews**, run by the local server through Claude Code on your Claude plan (or an API key): a 1–5 verdict, five quality dimensions (correctness, efficiency, edge cases, clarity, extensibility), named issues with fixes, and skill gaps that add up across questions.
+- **Claude reviews**, run by the local server through Claude Code on your Claude plan (or an API key): a 1–5 verdict, five quality dimensions (correctness, efficiency, edge cases, clarity, extensibility), named issues with fixes, skill gaps that add up across questions, and the code rewritten the way a strong candidate would have written it, with the reasons.
+- **Questions from pasted text.** Paste a forum post or interviewer notes; Claude writes the parts, tests and a reference solution, and the server verifies the solution against the tests before you save.
+- **An interview-style pad.** Question on the left, dark editor and output console on the right, part tabs, timers, `⌘↵` to run and `⇧⌘↵` to submit.
 - **Analytics** aimed at the interview: readiness (first three parts clean, in time, at quality), where attempts stall by part, time against budget, quality by dimension and topic, recurring gaps, progress across attempts.
 
 ## Run it
@@ -22,18 +24,18 @@ After that: `~/Work/whetstone/whetstone.sh` starts the server and opens the brow
 python3 server.py                        # http://localhost:8787
 ```
 
-Python 3.10+ and nothing else; the server is standard library only. Data lives in `~/.whetstone/whetstone.db` (change with `--data DIR` or `WHETSTONE_DATA`).
+Python 3.10+ and nothing else; the server is standard library only. Data lives in `data/` inside this folder, which git ignores, so `git pull` never touches it and deleting the folder removes everything (`--data DIR` or `WHETSTONE_DATA` moves it). An older `~/.whetstone` is migrated automatically.
 
-**Reviews.** If [Claude Code](https://code.claude.com/docs/en/overview) is installed and signed in (`claude` on PATH), the server uses it in print mode and the reviews count against your Claude Pro/Max plan; no API key needed. Otherwise set `ANTHROPIC_API_KEY`, or put `{"anthropicApiKey": "sk-ant-...", "model": "claude-sonnet-5-5"}` in `~/.whetstone/config.json`, and the API is billed separately. `"reviewer": "claude-code"` or `"api"` in `config.json` forces one; `"model"` picks the model (an alias such as `sonnet`/`opus` for Claude Code).
+**Reviews.** If [Claude Code](https://code.claude.com/docs/en/overview) is installed and signed in (`claude` on PATH), the server uses it in print mode and the reviews count against your Claude Pro/Max plan; no API key needed. Otherwise set `ANTHROPIC_API_KEY`, or put `{"anthropicApiKey": "sk-ant-...", "model": "claude-sonnet-5-5"}` in `data/config.json`, and the API is billed separately. `"reviewer": "claude-code"` or `"api"` in `config.json` forces one; `"model"` picks the model (an alias such as `sonnet`/`opus` for Claude Code).
 
 Open `http://localhost:8787` and work there. The GitHub Pages copy at https://m-chanakya.github.io/whetstone/ is the same app; it talks to `http://localhost:8787` on whichever machine you open it from, so the server has to be running either way, and your data never leaves it.
 
 ## Your data, as files
 
-Everything in `~/.whetstone` is meant to be handled without the UI:
+Everything in `data/` is meant to be handled without the UI:
 
 - `questions/<id>.md` — one Markdown file per question (front matter, then one `## Part N: title` section per gate with `entry:`, `minutes:`, the prompt, and a ```` ```tests ```` block). Add or edit files here and the server syncs them within seconds; edits in the UI are written back. `.json` works too.
-- `inbox/` — drop a question (`.md` or `.json`) or a backup/export file here and it is imported within seconds, then renamed `.imported`. `whetstone.sh add FILE…` does the copy for you.
+- `inbox/` — drop a question (`.md` or `.json`) or a backup/export file here and it is imported within seconds, then renamed `.imported`. Drop a `.txt` with pasted question text (a forum post, interviewer notes) and Claude turns it into a full question: parts, entry functions, test cases and a reference solution, which the server runs against every test before the question is written to `questions/`. `whetstone.sh add FILE…` does the copy for you. The same thing is on the Add question page as a paste box.
 - `backup/latest.json` — full export, rewritten after every change, plus daily snapshots. If the database is ever missing or empty, the server restores from it automatically. `whetstone.sh backup` writes a timestamped export; `whetstone.sh restore FILE` merges one back.
 - `whetstone.db` — the SQLite database itself.
 

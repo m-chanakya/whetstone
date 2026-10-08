@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Whetstone local backend: serves the app and keeps all data on this machine.
 
-    python server.py                 # http://localhost:8787, data in ~/.whetstone/whetstone.db
+    python server.py                 # http://localhost:8787, data in <repo>/data/
     python server.py --data ./mydata # keep the database somewhere else
     python server.py --port 9000
 
@@ -22,6 +22,8 @@ import argparse
 import json
 import mimetypes
 import os
+import re
+import shutil
 import sqlite3
 import sys
 import threading
@@ -32,6 +34,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from backend import draft as drafter  # noqa: E402
 from backend import qmd  # noqa: E402
 from backend import review as reviewer  # noqa: E402
 from backend import runner  # noqa: E402
@@ -136,7 +139,7 @@ class Files:
     """
 
     def __init__(self, store, data):
-        self.store, self.data = store, data
+        self.store, self.data, self.app = store, data, None
         self.qdir, self.inbox, self.bdir = data / "questions", data / "inbox", data / "backup"
         for d in (self.qdir, self.inbox, self.bdir, data / "seed"):
             d.mkdir(parents=True, exist_ok=True)
@@ -217,6 +220,26 @@ class Files:
     # ----- inbox
     def scan_inbox(self):
         n = 0
+        for p in sorted(self.inbox.glob("*.txt")):
+            if not self.app or not self.app.can_review:
+                break
+            print("drafting a question from inbox/%s with Claude…" % p.name)
+            try:
+                d = self.app.draft_question(p.read_text(), slug=slugify(p.stem))
+                q = d["question"]
+                while self.store.question(q["id"]):
+                    q["id"] += "-2"
+                self.store.put_question(q)
+                self.write_question(q)
+                (self.qdir / (q["id"] + ".solution.py")).write_text(d["solution"])
+                rep = d["report"]
+                ok = "all %d parts verified" % len(rep["parts"]) if rep["ok"] else "verification incomplete: " + "; ".join("%s %d/%d" % (x["title"], x.get("passed", 0), x.get("total", 0)) for x in rep["parts"])
+                print("drafted questions/%s.md (%s)%s" % (q["id"], ok, (" Notes: " + d["notes"]) if d.get("notes") else ""))
+                p.rename(p.with_name(p.name + ".imported"))
+                n += 1
+            except Exception as e:  # noqa: BLE001
+                print("could not draft from %s: %s" % (p.name, e), file=sys.stderr)
+                p.rename(p.with_name(p.name + ".failed"))
         for d in (self.inbox, self.data / "seed"):
             for p in sorted(list(d.glob("*.json")) + list(d.glob("*.md"))):
                 try:
@@ -282,6 +305,10 @@ class Files:
         threading.Thread(target=self.loop, daemon=True).start()
 
 
+def slugify(s):
+    s = re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:60]
+    return s or "question"
+
 def summarize_submission(s):
     run = s.get("cpython") or s.get("browser") or {}
     return {
@@ -298,15 +325,18 @@ def summarize_question(q):
 
 
 class App:
-    def __init__(self, store, api_key, model, backend, files):
-        self.store, self.api_key, self.model, self.backend, self.files = store, api_key, model, backend, files
+    def __init__(self, store, reviewer, files):
+        self.store, self.reviewer, self.files = store, reviewer, files
 
     @property
     def can_review(self):
-        return self.backend == "api" and bool(self.api_key) or self.backend == "claude-code"
+        return self.reviewer.available
 
     def run_review(self, q, s):
-        return reviewer.review(q, s, self.api_key, self.model, self.backend, cwd=str(self.store.path.parent))
+        return reviewer.review(q, s, self.reviewer)
+
+    def draft_question(self, text, hint="", slug=None):
+        return drafter.draft(text, self.reviewer, hint, slug)
 
     def evaluate(self, sid):
         """Background: CPython grade, then Claude review."""
@@ -376,7 +406,7 @@ class Handler(BaseHTTPRequestHandler):
         p = urlparse(self.path).path
         st = self.app.store
         if p == "/api/health":
-            return self._json(200, {"ok": True, "version": VERSION, "hasKey": self.app.can_review, "reviewer": self.app.backend if self.app.can_review else "off", "model": self.app.model or (reviewer.DEFAULT_CLI_MODEL if self.app.backend == "claude-code" else reviewer.DEFAULT_MODEL), "dataDir": str(st.path.parent), "questionsDir": str(self.app.files.qdir), "inboxDir": str(self.app.files.inbox), "backupDir": str(self.app.files.bdir)})
+            return self._json(200, {"ok": True, "version": VERSION, "hasKey": self.app.can_review, "reviewer": self.app.reviewer.backend if self.app.can_review else "off", "model": self.app.reviewer.model_name, "dataDir": str(st.path.parent), "questionsDir": str(self.app.files.qdir), "inboxDir": str(self.app.files.inbox), "backupDir": str(self.app.files.bdir)})
         if p == "/api/index":
             return self._json(200, {"questions": [summarize_question(q) for q in st.questions()], "submissions": [summarize_submission(s) for s in st.submissions()]})
         if p.startswith("/api/questions/"):
@@ -398,8 +428,11 @@ class Handler(BaseHTTPRequestHandler):
             qid = unquote(p.split("/", 3)[3])
             if not isinstance(q, dict) or q.get("id") != qid or not q.get("title") or not isinstance(q.get("gates"), list):
                 return self._json(400, {"error": "question needs id (matching the URL), title and gates"})
+            sol = q.pop("solution", None)
             self.app.store.put_question(q)
             self.app.files.write_question(q)
+            if sol and str(sol).strip():
+                (self.app.files.qdir / (qid + ".solution.py")).write_text(str(sol))
             self.app.files.mark_dirty()
             return self._json(200, summarize_question(q))
         return self._json(404, {"error": "no such route"})
@@ -445,6 +478,26 @@ class Handler(BaseHTTPRequestHandler):
             st.put_submission(s)
             self.app.files.mark_dirty()
             return self._json(200, fb)
+        if p == "/api/questions/draft":
+            body = self._body()
+            text = str(body.get("text") or "")
+            if len(text.strip()) < 40:
+                return self._json(400, {"error": "Paste the question text first (at least a few sentences)."})
+            if not self.app.can_review:
+                return self._json(409, {"error": "Drafting needs Claude: install Claude Code and sign in, or set an API key, then restart the server."})
+            try:
+                d = self.app.draft_question(text, str(body.get("hint") or ""), slugify(str(body.get("slug") or "")) if body.get("slug") else None)
+            except Exception as e:  # noqa: BLE001
+                return self._json(502, {"error": "draft failed: %s" % str(e)[:300]})
+            q = d["question"]
+            if not body.get("slug"):
+                q["id"] = slugify(q.get("title") or "question")
+            base = q["id"]
+            n = 2
+            while st.question(q["id"]):
+                q["id"] = "%s-%d" % (base, n)
+                n += 1
+            return self._json(200, {"question": q, "solution": d["solution"], "report": d["report"], "notes": d["notes"]})
         if p == "/api/import":
             n = st.import_(self._body())
             self.app.files.export_all_questions()
@@ -472,13 +525,38 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+def default_data_dir():
+    """Data lives inside the repo folder (gitignored) so the whole thing is one directory."""
+    return ROOT / "data"
+
+
+def migrate_old_data(data):
+    """Move ~/.whetstone into the repo's data folder the first time, if it exists."""
+    old = Path.home() / ".whetstone"
+    if data.resolve() == old.resolve() or not old.is_dir() or (data / "whetstone.db").exists():
+        return
+    if any(old.iterdir()):
+        data.parent.mkdir(parents=True, exist_ok=True)
+        if data.exists() and any(data.iterdir()):
+            for item in old.iterdir():
+                target = data / item.name
+                if not target.exists():
+                    shutil.move(str(item), str(target))
+        else:
+            if data.exists():
+                data.rmdir()
+            shutil.move(str(old), str(data))
+        print("moved your data from %s to %s" % (old, data))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=int(os.environ.get("WHETSTONE_PORT", 8787)))
-    ap.add_argument("--data", default=os.environ.get("WHETSTONE_DATA") or str(Path.home() / ".whetstone"))
+    ap.add_argument("--data", default=os.environ.get("WHETSTONE_DATA") or str(default_data_dir()))
     ap.add_argument("--host", default="127.0.0.1")
     a = ap.parse_args()
     data = Path(a.data).expanduser()
+    migrate_old_data(data)
     data.mkdir(parents=True, exist_ok=True)
     cfg = {}
     cfg_path = data / "config.json"
@@ -495,12 +573,13 @@ def main():
     else:
         backend = want
     if backend == "claude-code" and not reviewer.claude_cli():
-        print("reviewer is set to claude-code but the `claude` command is not on PATH; reviews are off", file=sys.stderr)
+        print("reviewer is set to claude-code but the `claude` command was not found; reviews are off", file=sys.stderr)
     store = Store(data / "whetstone.db")
     files = Files(store, data)
-    Handler.app = App(store, key, model, backend, files)
+    rv = reviewer.Reviewer(backend, key, model, cwd=str(data))
+    Handler.app = App(store, rv, files)
+    files.app = Handler.app
     files.restore_if_empty()
-    files.scan_inbox()
     changed = files.scan_questions()
     if changed:
         print("loaded %d question file(s) from %s" % (len(changed), files.qdir))
@@ -512,7 +591,7 @@ def main():
     print("data       %s  (questions/ to add or edit, inbox/ to drop files, backup/latest.json to restore)" % data)
     app = Handler.app
     if app.can_review:
-        print("reviews    on via %s, model %s" % ("Claude Code (your subscription)" if backend == "claude-code" else "Anthropic API", model or (reviewer.DEFAULT_CLI_MODEL if backend == "claude-code" else reviewer.DEFAULT_MODEL)))
+        print("reviews    on via %s, model %s" % ("Claude Code (your subscription)" if backend == "claude-code" else "Anthropic API", rv.model_name))
     else:
         print("reviews    off: install Claude Code and sign in (uses your Claude plan), or set ANTHROPIC_API_KEY")
     try:
