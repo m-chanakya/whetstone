@@ -320,3 +320,4 @@ details.draftbox .row{margin-top:8px}
 
 .gate.locked{opacity:.45;cursor:not-allowed}
 .gate:disabled:hover{color:var(--muted)}
+.prompt code{font:400 .88em var(--font-m);background:var(--sunk);padding:1px 5px;border-radius:4px;white-space:nowrap}

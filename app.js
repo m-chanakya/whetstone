@@ -47,6 +47,14 @@ function h(tag, attrs, ...kids){
   return el;
 }
 const clone = o => JSON.parse(JSON.stringify(o));
+const put = (el, ...kids) => { for (const k of kids.flat(Infinity)) if (k != null && k !== false) el.append(k); return el; };
+function promptEl(text, cls){
+  // Plain text with `inline code` spans; keeps line breaks.
+  const el = h('div',{class:cls || 'prompt'});
+  const parts = String(text || '').split(/(`[^`\n]+`)/);
+  for (const p of parts){ if (!p) continue; if (p.startsWith('`') && p.endsWith('`') && p.length > 2) el.append(h('code',{text:p.slice(1,-1)})); else el.append(document.createTextNode(p)); }
+  return el;
+}
 const str = (v,max) => (typeof v === 'string' ? v : '').trim().slice(0,max);
 const clampInt = (v,lo,hi,d) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.min(hi,Math.max(lo,n)) : d; };
 const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,60) || 'question';
@@ -423,7 +431,7 @@ async function renderQuestion(qid){
       h('p',{text:[q.topic, q.difficulty, q.source].filter(Boolean).join(', ')}), q.url && h('p',null, h('a',{href:q.url, target:'_blank', rel:'noopener', text:'Source'}))),
     h('div',{class:'row'}, h('a',{class:'btn primary', href:'#/q/' + qid + '/try', text:'Start an attempt'}), h('a',{class:'btn', href:'#/q/' + qid + '/edit', text:'Edit'}), h('a',{class:'btn', href:'#/analytics/' + qid, text:'Analytics'}),
       h('button',{class:'btn quiet', text:'Delete', onclick:async () => { if (!confirm('Delete this question and every submission for it?')) return; try { await API.deleteQuestion(qid); await boot(); location.hash = '#/'; } catch(e){ toast(e.message); } }}))));
-  if (q.overview) app.append(h('div',{class:'prompt', style:'max-width:80ch;margin-bottom:18px', text:q.overview}));
+  if (q.overview){ const o = promptEl(q.overview); o.style.cssText = 'max-width:80ch;margin-bottom:18px'; app.append(o); }
   app.append(h('div',{class:'section'}, h('h3',{text:'Parts'}), h('table',null, h('thead',null, h('tr',null, h('th',{text:'#'}), h('th',{text:'Part'}), h('th',{text:'Entry'}), h('th',{class:'num', text:'Budget'}), h('th',{class:'num', text:'Tests'}))),
     h('tbody',null, q.gates.map((g,i) => h('tr',null, h('td',{text:i+1}), h('td',{text:g.title}), h('td',null, h('code',{text:g.entry || '–'})), h('td',{class:'num', text:g.minutes ? g.minutes + ' min' : '–'}), h('td',{class:'num', text:parseTests(g.tests).tests.length})))))));
   const sec = h('div',{class:'section'}, h('h3',{text:'Attempts'}));
@@ -513,11 +521,11 @@ function renderPadLeft(q){
   const gate = q.gates[a.gi];
   host.replaceChildren();
   if (a.tab === 'question'){
-    host.append(h('h3',{text:`Part ${a.gi+1} of ${q.gates.length}: ${gate.title}`}), a.gi > 0 && h('p',{class:'hist', text:'Follow-up. Build on your current code; earlier parts should keep working.'}), h('div',{class:'prompt', text:gate.prompt}));
+    put(host, h('h3',{text:`Part ${a.gi+1} of ${q.gates.length}: ${gate.title}`}), a.gi > 0 && h('p',{class:'hist', text:'Follow-up. Build on your current code; earlier parts should keep working.'}), promptEl(gate.prompt));
     if (a.gi < q.gates.length - 1) host.append(h('p',{class:'hist', text:`${q.gates.length - a.gi - 1} more part${q.gates.length - a.gi - 1 === 1 ? '' : 's'} follow; each is revealed when you submit the one before it.`}));
     host.append(h('p',{class:'hist', text:gate.entry ? `Tests call ${gate.entry}(...)` : 'No entry function set on this part.'}));
-    if (a.gi > 0) host.append(h('details',{class:'earlier'}, h('summary',{text:'Earlier parts'}), q.gates.slice(0, a.gi).map((g,i) => h('div',null, h('h4',{text:`Part ${i+1}: ${g.title}`}), h('div',{class:'prompt small', text:g.prompt})))));
-    if (q.overview) host.append(h('details',{class:'earlier', open:a.gi === 0}, h('summary',{text:'Overview'}), h('div',{class:'prompt small', text:q.overview})));
+    if (a.gi > 0) host.append(h('details',{class:'earlier'}, h('summary',{text:'Earlier parts'}), q.gates.slice(0, a.gi).map((g,i) => h('div',null, h('h4',{text:`Part ${i+1}: ${g.title}`}), promptEl(g.prompt, 'prompt small')))));
+    if (q.overview) host.append(h('details',{class:'earlier', open:a.gi === 0}, h('summary',{text:'Overview'}), promptEl(q.overview, 'prompt small')));
   } else {
     const ids = q.gates.map(g => g.id).filter(id => a.subs[id]);
     if (!ids.length) host.append(h('p',{class:'none', text:'Submit a part and its review shows here.'}));
