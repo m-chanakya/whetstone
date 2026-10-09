@@ -328,6 +328,7 @@ function makeEditor(host, {value='', lang='python', onChange, placeholder='', re
     const cm = window.CodeMirror(host, {
       value, mode:lang === 'python' ? 'python' : 'javascript', lineNumbers:true, indentUnit:lang === 'python' ? 4 : 2, tabSize:4, indentWithTabs:false,
       matchBrackets:true, autoCloseBrackets:!readOnly, placeholder, readOnly, theme, lineWrapping:readOnly,
+      inputStyle:'contenteditable', spellcheck:false, autocorrect:false, autocapitalize:false,
       extraKeys:{
         Tab: c => c.somethingSelected() ? c.indentSelection('add') : c.replaceSelection(' '.repeat(c.getOption('indentUnit')),'end'),
         'Shift-Tab': c => c.indentSelection('subtract'), Esc: c => c.getInputField().blur(),
@@ -335,7 +336,10 @@ function makeEditor(host, {value='', lang='python', onChange, placeholder='', re
         'Shift-Cmd-Enter': () => onSubmit && onSubmit(), 'Shift-Ctrl-Enter': () => onSubmit && onSubmit(),
       },
     });
-    cm.getInputField().setAttribute('aria-label', readOnly ? 'Code' : 'Code editor. Press Escape to leave the editor.');
+    const inp = cm.getInputField();
+    inp.setAttribute('aria-label', readOnly ? 'Code' : 'Code editor. Press Escape to leave the editor.');
+    // Keep password managers (iCloud Passwords, 1Password, LastPass, Bitwarden) off the editor's input.
+    for (const [k,v] of Object.entries({autocomplete:'off', 'data-1p-ignore':'', 'data-lpignore':'true', 'data-bwignore':'', 'data-form-type':'other', name:'code-editor'})) inp.setAttribute(k, v);
     cm.on('change', () => { if (!silent && onChange) onChange(cm.getValue()); });
     requestAnimationFrame(() => cm.refresh());
     return {get:() => cm.getValue(), set:v => { silent = true; cm.setValue(v); silent = false; }, focus:() => cm.focus()};
