@@ -5,9 +5,9 @@ A private interview-practice notebook. The app code is public (this repo, served
 - **Questions with gates.** A question is a sequence of parts, each with its own prompt, entry function, test cases and time budget. Code carries over from part to part, the way escalating interview questions work.
 - **Real Python in the browser.** Tests run in Pyodide (CPython compiled to WebAssembly) in milliseconds. The server re-grades every submission in real CPython.
 - **Timed attempts.** One clock for the attempt, one per part, with pause. Submitting a part stores the code, test results and both times.
-- **Claude reviews**, run by the local server through Claude Code on your Claude plan (or an API key): a 1–5 verdict, five quality dimensions (correctness, efficiency, edge cases, clarity, extensibility), named issues with fixes, skill gaps that add up across questions, and the code rewritten the way a strong candidate would have written it, with the reasons.
+- **Claude reviews**, run by the local server through Claude Code on your Claude plan (or an API key): a 1–5 verdict, seven dimensions (approach, correctness, efficiency, edge cases, your own tests, clarity, extensibility), named issues with fixes, skill gaps that add up across questions, and the code rewritten the way a strong candidate would have written it, with the reasons.
 - **Questions from pasted text.** Paste a forum post or interviewer notes; Claude writes the parts, tests and a reference solution, and the server verifies the solution against the tests before you save.
-- **An interview-style pad.** Question on the left, dark editor and output console on the right, part tabs, timers, `⌘↵` to run and `⇧⌘↵` to submit.
+- **An interview-style pad.** Question on the left, dark editor and output console on the right, part tabs, timers. `⌘↵` runs your file as a script, so you write and run your own tests; `⇧⌘↵` submits, which grades against hidden tests and sends the code (tests included) for review. Follow-up parts are revealed only as you submit.
 - **Analytics** aimed at the interview: readiness (first three parts clean, in time, at quality), where attempts stall by part, time against budget, quality by dimension and topic, recurring gaps, progress across attempts.
 
 ## Run it

@@ -18,7 +18,7 @@ const SKILLS = {
   'testing':['Checking your own work','No walk-through, tests or invariants'],
   'extensibility':['Building for the next part','Earlier parts were not structured so later rules slot in'],
 };
-const DIMS = [['correctness','Correctness'],['efficiency','Efficiency'],['edgeCases','Edge cases'],['clarity','Clarity'],['extensibility','Extensibility']];
+const DIMS = [['approach','Approach'],['correctness','Correctness'],['efficiency','Efficiency'],['edgeCases','Edge cases'],['testing','Own tests'],['clarity','Clarity'],['extensibility','Extensibility']];
 const VERDICT = ['','Not there yet','Shaky','Borderline','Solid','Strong'];
 const LANGS = {python:'Python', javascript:'JavaScript'};
 
@@ -215,8 +215,8 @@ self.onmessage = async e => {
   try { if (!py) await (loading = loading || boot()); } catch(err){ self.postMessage({cases:[], stdout:'', error:'', pyFailed:String(err)}); return; }
   py.setStdout({batched:s => logs.push(s)}); py.setStderr({batched:s => logs.push(s)});
   let error = '';
-  try { py.globals.set('__tests', JSON.stringify(tests.map(t => t.args))); py.globals.set('__entry', entry || ''); py.runPython(code); }
-  catch(err){ error = String(err && err.message || err).split('\\n').filter(l => !/pyodide|_pyodide|<exec>/.test(l) || /Error/.test(l)).slice(-12).join('\\n'); }
+  try { py.globals.set('__tests', JSON.stringify(tests.map(t => t.args))); py.globals.set('__entry', entry || ''); py.globals.set('__name__', tests.length ? '__submission__' : '__main__'); py.runPython(code); }
+  catch(err){ const lines = String(err && err.message || err).split('\\n'); const k = lines.findIndex(l => l.includes('File "<exec>"')); error = (k >= 0 ? ['Traceback (most recent call last):', ...lines.slice(k)] : lines.filter(l => !/pyodide|_pyodide/.test(l))).map(l => l.replace('File "<exec>"', 'File "main.py"')).slice(-14).join('\\n'); }
   let cases = [];
   if (!error && tests.length){
     const r = py.runPython(\`
@@ -300,6 +300,11 @@ async function runGate(q, gate, code, onProgress){
     out.cases.push({raw:t.raw, pass, got, err:!!c.err, ms:c.ms});
   });
   return out;
+}
+async function runScript(q, code, onProgress){
+  const t0 = performance.now();
+  const r = await Runner.run(q.lang || 'python', code, [], '', onProgress);
+  return {script:true, runtime:r.runtime || '', error:r.error || '', stdout:r.stdout || '', passed:0, total:0, cases:[], ms:Math.round(performance.now() - t0)};
 }
 function renderRun(r){
   const box = h('div',{class:'run-out'});
@@ -512,7 +517,7 @@ async function renderTry(qid){
     edHost, console_);
   app.append(topbar, h('div',{class:'pad'}, left, right));
   renderPadLeft(q);
-  curEditor = makeEditor(edHost, {value:a.code, lang:q.lang, theme:'pad', placeholder:'# Build on the same file as you move through the parts.', onChange:v => { a.code = v; }, onRun:() => runCurrent(q), onSubmit:() => submitCurrent(q)});
+  curEditor = makeEditor(edHost, {value:a.code, lang:q.lang, theme:'pad', placeholder:'# Build on the same file through the parts.\n# Your own tests go under: if __name__ == "__main__":', onChange:v => { a.code = v; }, onRun:() => runCurrent(q), onSubmit:() => submitCurrent(q)});
   renderConsole();
   curEditor.focus();
 }
@@ -523,7 +528,7 @@ function renderPadLeft(q){
   if (a.tab === 'question'){
     put(host, h('h3',{text:`Part ${a.gi+1} of ${q.gates.length}: ${gate.title}`}), a.gi > 0 && h('p',{class:'hist', text:'Follow-up. Build on your current code; earlier parts should keep working.'}), promptEl(gate.prompt));
     if (a.gi < q.gates.length - 1) host.append(h('p',{class:'hist', text:`${q.gates.length - a.gi - 1} more part${q.gates.length - a.gi - 1 === 1 ? '' : 's'} follow; each is revealed when you submit the one before it.`}));
-    host.append(h('p',{class:'hist', text:gate.entry ? `Tests call ${gate.entry}(...)` : 'No entry function set on this part.'}));
+    host.append(h('p',{class:'hist', text:gate.entry ? `Define ${gate.entry}(...) at top level; hidden tests call it when you submit. Write your own tests under if __name__ == "__main__": and Run executes them.` : 'No entry function set on this part.'}));
     if (a.gi > 0) host.append(h('details',{class:'earlier'}, h('summary',{text:'Earlier parts'}), q.gates.slice(0, a.gi).map((g,i) => h('div',null, h('h4',{text:`Part ${i+1}: ${g.title}`}), promptEl(g.prompt, 'prompt small')))));
     if (q.overview) host.append(h('details',{class:'earlier', open:a.gi === 0}, h('summary',{text:'Overview'}), promptEl(q.overview, 'prompt small')));
   } else {
@@ -542,14 +547,16 @@ function renderPadLeft(q){
 function renderConsole(){
   const a = S.attempt, c = $('#console'); if (!a || !c) return;
   c.replaceChildren();
-  if (!a.console.length){ c.append(h('div',{class:'cline muted', text:'Run tests to see output here. ⌘↵ runs, ⇧⌘↵ submits the part.'})); return; }
+  if (!a.console.length){ c.append(h('div',{class:'cline muted', text:'Run executes your file as a script: write your own tests (asserts, prints, a main block) and see the output here. ⌘↵ runs, ⇧⌘↵ submits; submit grades against hidden tests and reviews your approach, code and tests.'})); return; }
   for (const item of a.console.slice(-6)){
     if (item.kind === 'busy'){ c.append(h('div',{class:'cline'}, h('span',{class:'dot'}), ' ' + item.text)); continue; }
     const r = item.r;
-    c.append(h('div',{class:'cline head'}, h('span',{class:'muted', text:item.when + '  '}), r.error ? h('span',{class:'fail', text:'Error'}) : h('span',{class:r.passed === r.total ? 'ok' : 'fail', text:`${r.passed} of ${r.total} passed`}), h('span',{class:'muted', text:'   ' + [r.runtime, r.ms != null ? r.ms + ' ms' : ''].filter(Boolean).join(', ')})));
+    const status = r.error ? h('span',{class:'fail', text:r.script ? 'Error' : 'Hidden tests: error'}) : r.script ? h('span',{class:'ok', text:'Ran'}) : h('span',{class:r.passed === r.total ? 'ok' : 'fail', text:`Hidden tests: ${r.passed} of ${r.total} passed`});
+    c.append(h('div',{class:'cline head'}, h('span',{class:'muted', text:item.when + '  '}), status, h('span',{class:'muted', text:'   ' + [r.runtime, r.ms != null ? r.ms + ' ms' : ''].filter(Boolean).join(', ')})));
     if (r.error) c.append(h('pre',{class:'cpre fail', text:r.error}));
     for (const g of r.cases || []) c.append(h('div',{class:'cline ' + (g.pass ? 'ok' : 'fail')}, (g.pass ? '✓ ' : '✗ ') + g.raw, !g.pass && h('span',{class:'got', text:'   ' + (g.err ? 'threw: ' : 'got: ') + g.got})));
     if (r.stdout) c.append(h('pre',{class:'cpre', text:r.stdout}));
+    else if (r.script && !r.error) c.append(h('div',{class:'cline muted', text:'(no output; print or assert in your own test block to see something here)'}));
   }
   c.scrollTop = c.scrollHeight;
 }
@@ -565,12 +572,13 @@ function switchGate(q, i){
   a.gateAcc[a.gi] = (a.gateAcc[a.gi] || 0) + (nowMs - a.gateStartedAt)/1000;
   a.gi = i; a.gateStartedAt = nowMs; a.tab = 'question'; render();
 }
-async function runCurrent(q){
+async function runCurrent(q, hidden){
   const a = S.attempt, gate = q.gates[a.gi], btn = $('#runBtn'); if (!$('#console') || a.busy) return null;
   a.code = curEditor.get(); a.busy = true; btn.disabled = true;
-  a.console.push({kind:'busy', text:'Running…'}); renderConsole();
-  const r = await runGate(q, gate, a.code, m => { const last = a.console[a.console.length-1]; if (last && last.kind === 'busy'){ last.text = m; renderConsole(); } });
-  a.busy = false; a.results[gate.id] = r;
+  a.console.push({kind:'busy', text:hidden ? 'Checking against the hidden tests…' : 'Running your file…'}); renderConsole();
+  const prog = m => { const last = a.console[a.console.length-1]; if (last && last.kind === 'busy'){ last.text = m; renderConsole(); } };
+  const r = hidden ? await runGate(q, gate, a.code, prog) : await runScript(q, a.code, prog);
+  a.busy = false; if (hidden) a.results[gate.id] = r;
   a.console = a.console.filter(x => x.kind !== 'busy'); a.console.push({kind:'run', r, when:new Date().toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit',second:'2-digit'})});
   if (S.attempt === a && $('#console')){ renderConsole(); $('#runBtn').disabled = false; }
   return r;
@@ -580,7 +588,7 @@ async function submitCurrent(q){
   a.code = curEditor.get();
   if (a.code.trim().length < 10){ toast('Write something first.'); return; }
   const sb = $('#submitBtn'); sb.disabled = true;
-  const r = await runCurrent(q);
+  const r = await runCurrent(q, true);
   const nowMs = (a.pausedAt || Date.now()) - a.pausedTotal;
   const sub = {id:tsId() + '-' + gate.id, questionId:q.id, gateId:gate.id, attemptId:a.id, at:new Date().toISOString(), lang:q.lang, code:a.code, lines:a.code.split('\n').length,
     elapsedSec:Math.round((nowMs - a.startedAt)/1000), gateSec:Math.round((a.gateAcc[a.gi] || 0) + (nowMs - a.gateStartedAt)/1000),
