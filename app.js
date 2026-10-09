@@ -466,7 +466,7 @@ async function renderTry(qid){
   if (S.view !== 'try') return;
   if (!S.attempt || S.attempt.qid !== qid){
     const prev = attemptsOf(qid); const lastSub = prev.length ? prev[prev.length-1].subs.slice(-1)[0] : null;
-    S.attempt = {qid, id:tsId(), startedAt:Date.now(), gi:0, gateStartedAt:Date.now(), gateAcc:{}, code:'', results:{}, subs:{}, lastSub, done:false, pausedAt:0, pausedTotal:0, tab:'question', console:[]};
+    S.attempt = {qid, id:tsId(), startedAt:Date.now(), gi:0, gateStartedAt:Date.now(), gateAcc:{}, code:'', results:{}, subs:{}, lastSub, done:false, pausedAt:0, pausedTotal:0, tab:'question', console:[], reached:0};
     if (q.lang === 'python') Runner.warm(m => { const el = $('#pyStatus'); if (el) el.textContent = m; });
   }
   document.body.classList.add('in-pad');
@@ -480,13 +480,15 @@ async function renderTry(qid){
     const budget = q.gates.reduce((s,x) => s + (x.minutes||0), 0); tAll.classList.toggle('over', !!budget && all > budget*60);
   };
   tick(); timerInt = setInterval(tick, 1000);
-  const gatesNav = h('div',{class:'gates', role:'tablist'}, q.gates.map((g,i) => h('button',{class:'gate', role:'tab', 'aria-current':i === a.gi ? 'true' : null, title:g.title, onclick:() => switchGate(q, i)}, h('span',{class:'pip ' + gateStatus(a.subs[g.id])}), `${i+1}`)));
+  const gatesNav = h('div',{class:'gates', role:'tablist'}, q.gates.map((g,i) => { const locked = i > a.reached; return h('button',{class:'gate' + (locked ? ' locked' : ''), role:'tab', disabled:locked, 'aria-current':i === a.gi ? 'true' : null, title:locked ? `Part ${i+1} is revealed when you submit part ${i}` : g.title, onclick:() => switchGate(q, i)}, h('span',{class:'pip ' + gateStatus(a.subs[g.id])}), locked ? `${i+1} 🔒` : `${i+1}`); }));
+  const hasNext = a.gi < q.gates.length - 1, submittedHere = !!a.subs[gate.id];
   const topbar = h('div',{class:'padbar'},
     h('a',{class:'btn quiet small', href:'#/q/' + qid, text:'← ' + (q.title.length > 38 ? q.title.slice(0,36) + '…' : q.title)}),
     gatesNav,
     h('span',{class:'spacer'}),
     h('div',{class:'timers'}, h('div',null, tGate, h('small',{text:`part ${a.gi+1}${gate.minutes ? ' / ' + gate.minutes + ' min' : ''}`})), h('div',null, tAll, h('small',{text:'total'}))),
     h('button',{class:'btn quiet small', id:'pauseBtn', text:a.pausedAt ? 'Resume' : 'Pause', onclick:() => { if (a.pausedAt){ a.pausedTotal += Date.now() - a.pausedAt; a.pausedAt = 0; } else a.pausedAt = Date.now(); $('#pauseBtn').textContent = a.pausedAt ? 'Resume' : 'Pause'; tick(); }}),
+    hasNext && submittedHere && h('button',{class:'btn small', text:'Next part →', title:'Move on like an interviewer would, even if tests still fail', onclick:() => advanceGate(q)}),
     h('button',{class:'btn quiet small', text:'Finish', onclick:() => finishAttempt(q)}));
   const tabs = h('div',{class:'ptabs'},
     h('button',{class:'ptab', 'aria-current':a.tab === 'question' ? 'true' : null, text:'Question', onclick:() => { a.tab = 'question'; render(); }}),
@@ -511,7 +513,8 @@ function renderPadLeft(q){
   const gate = q.gates[a.gi];
   host.replaceChildren();
   if (a.tab === 'question'){
-    host.append(h('h3',{text:`Part ${a.gi+1} of ${q.gates.length}: ${gate.title}`}), h('div',{class:'prompt', text:gate.prompt}));
+    host.append(h('h3',{text:`Part ${a.gi+1} of ${q.gates.length}: ${gate.title}`}), a.gi > 0 && h('p',{class:'hist', text:'Follow-up. Build on your current code; earlier parts should keep working.'}), h('div',{class:'prompt', text:gate.prompt}));
+    if (a.gi < q.gates.length - 1) host.append(h('p',{class:'hist', text:`${q.gates.length - a.gi - 1} more part${q.gates.length - a.gi - 1 === 1 ? '' : 's'} follow; each is revealed when you submit the one before it.`}));
     host.append(h('p',{class:'hist', text:gate.entry ? `Tests call ${gate.entry}(...)` : 'No entry function set on this part.'}));
     if (a.gi > 0) host.append(h('details',{class:'earlier'}, h('summary',{text:'Earlier parts'}), q.gates.slice(0, a.gi).map((g,i) => h('div',null, h('h4',{text:`Part ${i+1}: ${g.title}`}), h('div',{class:'prompt small', text:g.prompt})))));
     if (q.overview) host.append(h('details',{class:'earlier', open:a.gi === 0}, h('summary',{text:'Overview'}), h('div',{class:'prompt small', text:q.overview})));
@@ -542,8 +545,13 @@ function renderConsole(){
   }
   c.scrollTop = c.scrollHeight;
 }
+function advanceGate(q){
+  const a = S.attempt; if (a.gi >= q.gates.length - 1) return;
+  a.reached = Math.max(a.reached, a.gi + 1);
+  switchGate(q, a.gi + 1);
+}
 function switchGate(q, i){
-  const a = S.attempt; if (i === a.gi) return;
+  const a = S.attempt; if (i === a.gi || i > a.reached) return;
   a.code = curEditor ? curEditor.get() : a.code;
   const nowMs = (a.pausedAt || Date.now()) - a.pausedTotal;
   a.gateAcc[a.gi] = (a.gateAcc[a.gi] || 0) + (nowMs - a.gateStartedAt)/1000;
@@ -584,12 +592,11 @@ async function submitCurrent(q){
   }
   if (S.attempt !== a) return;
   const passed = r && !r.error && r.passed === r.total;
+  if (a.gi < q.gates.length - 1) a.reached = Math.max(a.reached, a.gi + 1);
   if (a.gi < q.gates.length - 1 && passed){
-    const t2 = (a.pausedAt || Date.now()) - a.pausedTotal;
-    a.gateAcc[a.gi] = (a.gateAcc[a.gi] || 0) + (t2 - a.gateStartedAt)/1000;
-    a.gi++; a.gateStartedAt = t2; a.tab = 'question'; render();
-    toast(`Part ${a.gi} passed. On to part ${a.gi+1}; the review lands under Feedback.`);
-  } else { a.tab = 'feedback'; render(); }
+    advanceGate(q);
+    toast(`Part ${a.gi} passed. Here is the follow-up; the review lands under Feedback.`);
+  } else { a.tab = 'feedback'; render(); if (a.gi < q.gates.length - 1) toast('Not all tests pass. Fix and resubmit, or use "Next part" to move on the way an interviewer would.'); }
 }
 function finishAttempt(q){
   const a = S.attempt; const n = Object.keys(a.subs).length;
@@ -628,8 +635,8 @@ async function renderEdit(qid){
   drawGates();
   const draftOut = h('div');
   const draftBox = isNew && h('details',{class:'draftbox', open:!q.title},
-    h('summary',null, h('strong',{text:'Paste the question text and let Claude build it'})),
-    h('p',{class:'hist', text:'Paste the whole thing from the forum or the interviewer notes, follow-ups included. Claude writes the parts, entry functions and test cases, and a reference solution that the server runs against every test before you see it. Then you can edit anything below and save.'}),
+    h('summary',null, h('strong',{text:'Step 1: paste the question as you found it'})),
+    h('p',{class:'hist', text:'Paste the whole description from 1point3acres or your notes, follow-ups and all. Claude splits it into parts in interview order (the base task, then each follow-up), writes entry functions and test cases, and a reference solution that the server runs against every test before you see it. Step 2 is to glance over the parts below and save. During an attempt, only the current part is visible; each follow-up is revealed when you submit the one before it.'}),
     h('textarea',{id:'draftText', rows:'8', placeholder:'Paste the question here…'}),
     h('div',{class:'row'}, h('input',{type:'text', id:'draftHint', placeholder:'Optional guidance: language, how many parts, what to emphasise', style:'flex:1;min-width:220px'}),
       h('button',{class:'btn primary', id:'draftBtn', disabled:!(S.health && S.health.hasKey), text:'Draft with Claude', onclick:async e => {
