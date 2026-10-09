@@ -46,14 +46,24 @@ def claude_cli():
 
 def ask_cli(prompt, model, cwd=None, schema=None):
     """Ask through Claude Code in print mode, which bills the user's Claude subscription."""
+    # The structured-output step counts as a turn of its own, so a cap of 1 fails with error_max_turns.
     cmd = [claude_cli(), "-p", "--output-format", "json", "--json-schema", json.dumps(schema or SCHEMA), "--tools", "",
-           "--max-turns", "1", "--no-session-persistence", "--model", model or DEFAULT_CLI_MODEL]
-    p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=300, cwd=cwd)
+           "--max-turns", "6", "--no-session-persistence", "--model", model or DEFAULT_CLI_MODEL]
+    p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=600, cwd=cwd)
+    out = None
+    try:
+        out = json.loads(p.stdout) if p.stdout.strip() else None
+    except json.JSONDecodeError:
+        out = None
+    if out and out.get("structured_output"):
+        return out["structured_output"]
+    if out and out.get("is_error"):
+        detail = "; ".join(str(e) for e in (out.get("errors") or [])) or str(out.get("result") or out.get("subtype") or "")
+        raise RuntimeError("claude: %s" % detail[:400])
     if p.returncode != 0:
-        raise RuntimeError("claude exited %d: %s" % (p.returncode, (p.stderr or p.stdout).strip()[-400:]))
-    out = json.loads(p.stdout)
-    if out.get("is_error"):
-        raise RuntimeError("claude: %s" % str(out.get("result"))[:400])
+        raise RuntimeError("claude exited %d: %s" % (p.returncode, (p.stderr.strip() or p.stdout.strip())[:400]))
+    if not out:
+        raise RuntimeError("claude returned no output")
     if out.get("structured_output"):
         return out["structured_output"]
     text = str(out.get("result") or "")
