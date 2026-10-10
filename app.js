@@ -353,20 +353,65 @@ function renderRun(r){
 }
 
 /* ---------- editor ---------- */
+/* ---------- editor: completion ---------- */
+const PY_WORDS = ('False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield ' +
+  'abs all any ascii bin bool bytearray bytes callable chr classmethod complex dict dir divmod enumerate eval filter float format frozenset getattr globals hasattr hash hex id input int isinstance issubclass iter len list map max min next object oct open ord pow print property range repr reversed round set setattr slice sorted staticmethod str sum super tuple type vars zip ' +
+  'self cls __init__ __repr__ __str__ __eq__ __hash__ __lt__ __len__ __iter__ __next__ __getitem__ __setitem__ __contains__ __call__ __enter__ __exit__ __name__ __main__ ' +
+  'collections defaultdict deque Counter OrderedDict namedtuple heapq heappush heappop heapify heappushpop heapreplace nlargest nsmallest bisect bisect_left bisect_right insort itertools permutations combinations product accumulate chain groupby functools lru_cache cache reduce partial math inf gcd sqrt floor ceil log2 isqrt random typing List Dict Set Tuple Optional Iterable Iterator Callable dataclasses dataclass field string ascii_lowercase ascii_uppercase digits re sys setrecursionlimit threading Lock RLock Condition Semaphore Event Thread queue Queue PriorityQueue time perf_counter json dumps loads Exception ValueError KeyError IndexError TypeError StopIteration RuntimeError NotImplementedError ZeroDivisionError').split(' ');
+const PY_METHODS = ('append extend insert pop remove clear index count sort reverse copy ' +
+  'keys values items get setdefault update popitem ' +
+  'add discard union intersection difference symmetric_difference issubset issuperset isdisjoint ' +
+  'split rsplit join strip lstrip rstrip lower upper title capitalize swapcase startswith endswith find rfind replace isdigit isalpha isalnum isspace isupper islower zfill center ljust rjust format encode decode partition rpartition splitlines ' +
+  'popleft appendleft rotate most_common elements subtract bit_length to_bytes from_bytes real imag conjugate is_integer as_integer_ratio ' +
+  'acquire release wait notify notify_all set is_set put get_nowait put_nowait empty full qsize task_done ' +
+  'read write readline readlines close seek tell match search findall finditer sub group groups start end span fullmatch compile').split(' ');
+const JS_WORDS = 'const let var function return if else for while do switch case break continue new class extends super this null undefined true false typeof instanceof async await yield import export default try catch finally throw Map Set Array Object Number String Boolean Promise JSON Math console parseInt parseFloat isNaN Infinity push pop shift unshift slice splice map filter reduce forEach find findIndex includes indexOf join sort reverse concat flat flatMap some every keys values entries has get set add delete size length toString toFixed charAt charCodeAt fromCharCode substring substr trim split replace padStart padEnd repeat startsWith endsWith localeCompare'.split(' ');
+function codeHint(cm, lang){
+  const cur = cm.getCursor(), line = cm.getLine(cur.line);
+  const tok = cm.getTokenAt(cur);
+  if (tok.type === 'comment' || tok.type === 'string') return null;
+  let start = cur.ch; while (start > 0 && /[\w$]/.test(line.charAt(start - 1))) start--;
+  const prefix = line.slice(start, cur.ch), afterDot = start > 0 && line.charAt(start - 1) === '.';
+  if (!prefix && !afterDot) return null;
+  const seen = new Set(), list = [];
+  const push = w => { if (w && w !== prefix && !seen.has(w) && w.toLowerCase().startsWith(prefix.toLowerCase())){ seen.add(w); list.push(w); } };
+  // Names from the file itself first (definitions, variables), then the language's own vocabulary.
+  const text = cm.getValue(); const re = /[A-Za-z_$][\w$]{1,}/g; const own = new Map(); let m;
+  while ((m = re.exec(text))) own.set(m[0], (own.get(m[0]) || 0) + 1);
+  const ownSorted = [...own.entries()].sort((a,b) => b[1]-a[1]).map(e => e[0]);
+  if (afterDot){ for (const w of (lang === 'python' ? PY_METHODS : JS_WORDS)) push(w); for (const w of ownSorted) push(w); }
+  else { for (const w of ownSorted) push(w); for (const w of (lang === 'python' ? PY_WORDS : JS_WORDS)) push(w); }
+  if (!list.length) return null;
+  return {list:list.slice(0, 40), from:CodeMirror.Pos(cur.line, start), to:CodeMirror.Pos(cur.line, cur.ch)};
+}
+const EdPrefs = {get(){ try { return JSON.parse(localStorage.getItem('whetstone.editor') || '{}'); } catch(e){ return {}; } }, set(p){ try { localStorage.setItem('whetstone.editor', JSON.stringify({...this.get(), ...p})); } catch(e){} }};
+function applyEditorFont(host, size){ host.style.setProperty('--ed-size', size + 'px'); }
 function makeEditor(host, {value='', lang='python', onChange, placeholder='', readOnly=false, onRun, onSubmit, theme='default', onType}){
   if (window.CodeMirror){
     let silent = false;
+    const prefs = EdPrefs.get(); applyEditorFont(host, prefs.fontSize || 13.5);
+    const hint = c => c.showHint({hint:cm => codeHint(cm, lang), completeSingle:false, alignWithWord:true, closeCharacters:/[\s()\[\]{};:>,]/});
     const cm = window.CodeMirror(host, {
       value, mode:lang === 'python' ? 'python' : 'javascript', lineNumbers:true, indentUnit:lang === 'python' ? 4 : 2, tabSize:4, indentWithTabs:false,
-      matchBrackets:true, autoCloseBrackets:!readOnly, placeholder, readOnly, theme, lineWrapping:readOnly,
+      matchBrackets:true, autoCloseBrackets:!readOnly, placeholder, readOnly, theme, lineWrapping:readOnly || !!prefs.wrap,
       inputStyle:'contenteditable', spellcheck:false, autocorrect:false, autocapitalize:false,
+      keyMap:readOnly ? 'default' : 'sublime', styleActiveLine:!readOnly, showTrailingSpace:!readOnly, highlightSelectionMatches:readOnly ? false : {minChars:3, wordsOnly:true, annotateScrollbar:true},
+      foldGutter:!readOnly, gutters:readOnly ? ['CodeMirror-linenumbers'] : ['CodeMirror-linenumbers', 'CodeMirror-foldgutter'],
       extraKeys:{
-        Tab: c => c.somethingSelected() ? c.indentSelection('add') : c.replaceSelection(' '.repeat(c.getOption('indentUnit')),'end'),
+        Tab: c => { if (c.somethingSelected()) return c.indentSelection('add'); const cur = c.getCursor(), before = c.getLine(cur.line).slice(0, cur.ch); if (/[\w$.]$/.test(before)) return hint(c); c.replaceSelection(' '.repeat(c.getOption('indentUnit')),'end'); },
         'Shift-Tab': c => c.indentSelection('subtract'), Esc: c => c.getInputField().blur(),
+        'Ctrl-Space': hint, 'Alt-Space': hint,
         'Cmd-Enter': () => onRun && onRun(), 'Ctrl-Enter': () => onRun && onRun(),
         'Shift-Cmd-Enter': () => onSubmit && onSubmit(), 'Shift-Ctrl-Enter': () => onSubmit && onSubmit(),
+        'Cmd-=': c => bumpFont(c, 1), 'Cmd--': c => bumpFont(c, -1), 'Ctrl-=': c => bumpFont(c, 1), 'Ctrl--': c => bumpFont(c, -1),
+        'Alt-Z': c => { const w = !c.getOption('lineWrapping'); c.setOption('lineWrapping', w); EdPrefs.set({wrap:w}); },
       },
     });
+    const bumpFont = (c, d) => { const s = Math.min(22, Math.max(10, (EdPrefs.get().fontSize || 13.5) + d)); EdPrefs.set({fontSize:s}); applyEditorFont(host, s); c.refresh(); };
+    if (!readOnly){
+      let hintT = null;
+      cm.on('inputRead', (c, ch) => { if (!ch.text || ch.text.length !== 1) return; const s = ch.text[0]; if (!/[\w.]/.test(s) || c.state.completionActive) return; clearTimeout(hintT); hintT = setTimeout(() => { if (!c.state.completionActive) hint(c); }, s === '.' ? 0 : 160); });
+    }
     const inp = cm.getInputField();
     inp.setAttribute('aria-label', readOnly ? 'Code' : 'Code editor. Press Escape to leave the editor.');
     // Keep password managers (iCloud Passwords, 1Password, LastPass, Bitwarden) off the editor's input.
@@ -683,7 +728,7 @@ function toggleVoice(q){
 function renderPadLeft(q){
   const a = S.attempt, host = $('#padleft'); if (!a || !host) return;
   const gate = q.gates[a.gi];
-  host.replaceChildren();
+  host.replaceChildren(); host.classList.toggle('chatmode', a.tab === 'ask');
   if (a.tab === 'question'){
     put(host, h('h3',{text:`Part ${a.gi+1} of ${q.gates.length}: ${gate.title}`}), a.gi > 0 && h('p',{class:'hist', text:'Follow-up. Build on your current code; earlier parts should keep working.'}), promptEl(gate.prompt));
     if (a.gi < q.gates.length - 1) host.append(h('p',{class:'hist', text:`${q.gates.length - a.gi - 1} more part${q.gates.length - a.gi - 1 === 1 ? '' : 's'} follow; each is revealed when you submit the one before it.`}));
@@ -716,7 +761,7 @@ function renderPadLeft(q){
 function renderConsole(){
   const a = S.attempt, c = $('#console'); if (!a || !c) return;
   c.replaceChildren();
-  if (!a.console.length){ c.append(h('div',{class:'cline muted', text:'Run executes your file as a script: write your own tests (asserts, prints, a main block) and see the output here. ⌘↵ runs, ⇧⌘↵ submits; submit grades against hidden tests and reviews your approach, code and tests.'})); return; }
+  if (!a.console.length){ c.append(h('div',{class:'cline muted', text:'Run executes your file as a script: write your own tests (asserts, prints, a main block) and see the output here. ⌘↵ runs, ⇧⌘↵ submits; submit grades against hidden tests and reviews your approach, code and tests.'}), h('div',{class:'cline muted', text:'Editor: completions as you type (Tab or ⌃Space to open, ↵ to accept), ⌘D select next occurrence, ⌘/ comment, ⌘F find, ⌥⌘F replace, ⌥↑↓ move line, ⇧⌘D duplicate line, ⌘= / ⌘- font size, ⌥Z wrap.'})); return; }
   for (const item of a.console.slice(-6)){
     if (item.kind === 'busy'){ c.append(h('div',{class:'cline'}, h('span',{class:'dot'}), ' ' + item.text)); continue; }
     const r = item.r;

@@ -272,7 +272,23 @@ The candidate's current code, for context (do not comment on it unless asked):
 
 Reply with only one JSON object: {{"answer": "<what you say>"}}"""
     raw = reviewer.ask_json(prompt, INTERVIEW_SCHEMA)
-    return str(raw.get("answer") or "").strip()[:1500]
+    return plain_text(raw.get("answer"), "answer")[:1500]
+
+
+def plain_text(value, key):
+    """The model occasionally writes the JSON object itself into the text field; unwrap it."""
+    s = str(value or "").strip()
+    for _ in range(2):
+        if s.startswith("{") and s.endswith("}"):
+            try:
+                inner = json.loads(s)
+            except json.JSONDecodeError:
+                break
+            if isinstance(inner, dict) and isinstance(inner.get(key), str):
+                s = inner[key].strip()
+                continue
+        break
+    return s
 
 
 NUDGE_SCHEMA = {"type": "object", "properties": {"kind": {"type": "string"}, "text": {"type": "string"}}, "required": ["kind", "text"]}
@@ -311,7 +327,7 @@ The candidate's code right now:
 Reply with only one JSON object: {{"kind": "time" | "idle" | "stuck" | "none", "text": "<what you say, or empty if none>"}}. Prefer "none" whenever a tough interviewer would stay silent."""
     raw = reviewer.ask_json(prompt, NUDGE_SCHEMA)
     kind = str(raw.get("kind") or "none")
-    text = str(raw.get("text") or "").strip()[:400]
+    text = plain_text(raw.get("text"), "text")[:400]
     if kind not in ("time", "idle", "stuck") or not text:
         return {"kind": "none", "text": ""}
     return {"kind": kind, "text": text}
