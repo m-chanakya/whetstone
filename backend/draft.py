@@ -145,9 +145,10 @@ DRILLS_SCHEMA = {"type": "object", "properties": {"questions": {"type": "array",
 
 def drills_prompt(focus, count, examples_md, minutes, hint=""):
     ex = "\n\n".join("<example>\n%s\n</example>" % e.strip()[:6000] for e in examples_md[:2])
+    style = ("Style reference from the user's own questions:\n" + ex) if examples_md else ""
     return f"""You write short, focused coding drills for interview practice. Each drill is ONE part, meant to take about {minutes} minutes, and targets this focus: {focus}.
 Write {count} distinct drills, each a different scenario, difficulty rising from the first to the last. Each has a spoken-style prompt (brief, with a couple of details deliberately left for the candidate to ask), a precise spec block, 6-10 hidden tests with edge cases, and a complete Python 3 reference solution (standard library only) that passes every test. Put `kind: drill` and `skills: {focus}` in the front matter, `minutes: {minutes}` on the part.
-{('Style reference from the user\'s own questions:' + chr(10) + ex) if examples_md else ''}
+{style}
 {('Guidance from the user: ' + hint.strip()[:1500]) if hint.strip() else ''}
 
 Reply with only one JSON object: {{"questions": [{{"markdown": "<drill 1 in the Markdown format>", "solution": "<reference solution>", "notes": ""}}, ...]}}
