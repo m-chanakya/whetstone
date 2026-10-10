@@ -385,6 +385,14 @@ function codeHint(cm, lang){
   return {list:list.slice(0, 40), from:CodeMirror.Pos(cur.line, start), to:CodeMirror.Pos(cur.line, cur.ch)};
 }
 const EdPrefs = {get(){ try { return JSON.parse(localStorage.getItem('whetstone.editor') || '{}'); } catch(e){ return {}; } }, set(p){ try { localStorage.setItem('whetstone.editor', JSON.stringify({...this.get(), ...p})); } catch(e){} }};
+/* An in-progress attempt survives reloads: snapshot every few seconds, restore on return. */
+const Draft = {
+  key:'whetstone.attempt',
+  save(a){ if (!a || a.done) return; try { const {asking, nudging, busy, lastSub, ...rest} = a; localStorage.setItem(this.key, JSON.stringify({...rest, voice:false, savedAt:Date.now()})); } catch(e){} },
+  load(){ try { const d = JSON.parse(localStorage.getItem(this.key) || 'null'); return d && d.qid && Date.now() - d.savedAt < 36e5 * 24 ? d : null; } catch(e){ return null; } },
+  clear(){ try { localStorage.removeItem(this.key); } catch(e){} },
+};
+window.addEventListener('beforeunload', e => { if (S.attempt && !S.attempt.done){ Draft.save(S.attempt); e.preventDefault(); e.returnValue = 'An attempt is in progress.'; } });
 function applyEditorFont(host, size){ host.style.setProperty('--ed-size', size + 'px'); }
 function makeEditor(host, {value='', lang='python', onChange, placeholder='', readOnly=false, onRun, onSubmit, theme='default', onType}){
   if (window.CodeMirror){
@@ -467,7 +475,7 @@ function route(){
   if (p0 === 'q' && p1) return {view:p2 === 'edit' ? 'edit' : p2 === 'try' ? 'try' : 'question', qid:p1};
   return {view:'questions'};
 }
-window.addEventListener('hashchange', () => { if (S.attempt && !S.attempt.done && route().view !== 'try' && !confirm('Leave this attempt? Unsubmitted code is kept in the editor only until you leave.')){ location.hash = '#/q/' + S.attempt.qid + '/try'; return; } render(); });
+window.addEventListener('hashchange', () => { if (S.attempt && !S.attempt.done && route().view !== 'try'){ if (!confirm('Leave this attempt? Unsubmitted code is kept in the editor only until you leave.')){ location.hash = '#/q/' + S.attempt.qid + '/try'; return; } Draft.clear(); } render(); });
 function render(){
   const r = route(); S.view = r.view;
   for (const a of document.querySelectorAll('.tab')) a.toggleAttribute('aria-current', false), (a.dataset.view === r.view || (a.dataset.view === 'questions' && ['question','try','edit'].includes(r.view) && !(S.questions.get(r.qid) || {}).kind)) && a.setAttribute('aria-current','page');
@@ -490,6 +498,9 @@ function render(){
 function renderQuestions(){
   const qs = [...S.questions.values()].filter(q => q.kind !== 'drill').sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
   app.append(renderCountdown());
+  const d = Draft.load();
+  if (d && S.questions.get(d.qid)) app.append(h('div',{class:'resume-box'}, h('div',null, h('b',{text:`Unfinished attempt: ${S.questions.get(d.qid).title}`}), h('span',{class:'hist', text:` · part ${d.gi + 1}, ${fmtSec((d.savedAt - (d.pausedTotal || 0) - d.startedAt)/1000)} on the clock, saved ${fmtDateTime(new Date(d.savedAt).toISOString())}`})), h('span',{class:'spacer'}),
+    h('a',{class:'btn primary small', href:'#/q/' + d.qid + '/try', text:'Pick it up'}), h('button',{class:'btn quiet small', text:'Discard', onclick:e => { if (confirm('Discard the unfinished attempt?')){ Draft.clear(); e.target.closest('.resume-box').remove(); } }})));
   app.append(h('div',{class:'page-head'}, h('div',null, h('h2',{text:'Questions'}), h('p',{text:'Each question is a sequence of gated parts, timed separately. Submit a part to store the code, its test result and the time it took.'}))));
   if (!qs.length){ app.append(h('div',{class:'none'}, 'No questions yet. ', h('a',{href:'#/new', text:'Add the first one'}), '.')); return; }
   const grid = h('div',{class:'qgrid'});
@@ -596,7 +607,17 @@ async function renderTry(qid){
   if (!S.attempt || S.attempt.qid !== qid){
     const prev = attemptsOf(qid); const lastSub = prev.length ? prev[prev.length-1].subs.slice(-1)[0] : null;
     const rs = S.resume && S.resume.qid === qid ? S.resume : null; S.resume = null;
+    const d = !rs && Draft.load();
+    if (d && d.qid === qid){
+      const gap = Date.now() - d.savedAt;
+      S.attempt = {...d, lastSub, done:false, pausedAt:0, pausedTotal:(d.pausedTotal || 0) + (d.pausedAt ? d.savedAt - d.pausedAt : 0) + gap, asking:false, nudging:false, voice:false};
+      for (const s of Object.values(S.attempt.subs || {})) if (s.pending) waitForEval(s.id, full => { Object.assign(s, {feedback:full.feedback, cpython:full.cpython, reviewError:full.reviewError, pending:null}); if (S.attempt && S.attempt.tab === 'feedback') renderPadLeft(q); });
+      toast(`Restored your attempt after a reload; the ${fmtSec(gap/1000)} away did not count. Part ${S.attempt.gi + 1}, ${fmtSec((Date.now() - S.attempt.pausedTotal - S.attempt.startedAt)/1000)} on the clock.`);
+    } else if (d && d.qid !== qid && !confirm(`You have an unfinished attempt on "${(S.questions.get(d.qid) || {}).title || d.qid}" from a reload. Starting this one discards it. Continue?`)){ location.hash = '#/q/' + d.qid + '/try'; return; }
+    else {
+    Draft.clear();
     S.attempt = {qid, id:tsId(), startedAt:Date.now(), gi:rs ? rs.gi : 0, gateStartedAt:Date.now(), gateAcc:{}, code:rs ? rs.code : '', results:{}, subs:{}, lastSub, done:false, pausedAt:0, pausedTotal:0, tab:'question', console:[], reached:rs ? rs.reached : 0, chats:{}, resumedFrom:rs ? rs.from : null, typing:{}, lastEditAt:0, lastSpokeAt:0, nudged:{}, lastNudgeAt:0, lastStuckCheckAt:0, lastStuckCode:'', voice:false};
+    }
     if (rs) toast(`Resumed with your code from ${fmtDateTime(rs.from.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, '$1-$2-$3T$4:$5:$6Z'))}; starting at part ${S.attempt.gi + 1}.`);
     if (q.lang === 'python') Runner.warm(m => { const el = $('#pyStatus'); if (el) el.textContent = m; });
   }
@@ -613,6 +634,7 @@ async function renderTry(qid){
     tGate.classList.toggle('over', !!gate.minutes && g > gate.minutes*60);
     const budget = q.gates.reduce((s,x) => s + (x.minutes||0), 0); tAll.classList.toggle('over', !!budget && all > budget*60);
     if (!a.pausedAt && !a.subs[gate.id]) maybeNudge(q, g);
+    if (Math.floor(all) % 5 === 0){ a.code = curEditor ? curEditor.get() : a.code; Draft.save(a); }
   };
   const nudged = () => a.nudged[gate.id] = a.nudged[gate.id] || {};
   const pushNudge = (reason, kind, text) => {
@@ -833,7 +855,7 @@ async function submitCurrent(q){
 function finishAttempt(q){
   const a = S.attempt; const n = Object.keys(a.subs).length;
   if (!n && !confirm('Nothing was submitted in this attempt. Leave anyway?')) return;
-  a.done = true; S.attempt = null; location.hash = '#/q/' + q.id;
+  a.done = true; Draft.clear(); S.attempt = null; location.hash = '#/q/' + q.id;
 }
 
 /* ---------- edit / new ---------- */

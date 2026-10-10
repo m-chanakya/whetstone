@@ -410,3 +410,4 @@ details.draftbox .row{margin-top:8px}
 .msg.nudge .who{color:var(--warn)}
 .msg.say{opacity:.85}
 .msg.say .who{font-style:italic}
+.resume-box{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--pen-soft);border-radius:12px;padding:12px 18px;margin:0 0 24px}
