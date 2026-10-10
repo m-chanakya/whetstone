@@ -9,6 +9,8 @@ A private interview-practice notebook. The app code is public (this repo, served
 - **Questions from pasted text.** Paste a forum post or interviewer notes; Claude writes the parts, tests and a reference solution, and the server verifies the solution against the tests before you save.
 - **An interview-style pad.** The prompt is what the interviewer would say, with the fine rules deliberately left out; an *Ask the interviewer* chat (Claude, working from a hidden spec) answers clarifying questions, and what you ask is graded. Dark editor and output console, part tabs, timers. `⌘↵` runs your file as a script with your own tests; `⇧⌘↵` submits, which grades against hidden tests and sends code, tests and chat for review. Follow-ups are revealed only as you submit; any past attempt can be resumed.
 - **Drills and variants.** Claude writes short single-part drills around a skill gap or topic (verified before saving), and new full questions in the style of your own ones with a different scenario. *Revise with Claude* on a question's Edit page changes parts, spec, tests and reference solution together.
+- **Talk, and be nudged.** A *Talk* button above the editor listens (browser speech recognition, nothing installed): ask the interviewer a question and it is answered out loud; just say what you are about to do and you get a nod. The interviewer also speaks up unprompted, the way a hands-off one does: time checks at 80% and 100% of a part's budget, "where are you at?" after minutes of silence, and the smallest possible question when the code is heading somewhere it will not recover from. Every nudge is logged with the submission, graded (*thinking aloud* and *independence* dimensions), and costs points in the hire estimate.
+- **Countdown.** The Questions page counts down to the interview stages in days, hours and minutes (OpenAI phone screen: Coding and Architecture, both must pass; onsite TBD until it does). Dates are in Settings.
 - **Analytics** that say what to fix next: the three most actionable findings with a drill button each, quality and pass-rate trends, per-dimension scores with movement, where full attempts end, pace against budget, recurring gaps.
 
 ## Run it
@@ -64,4 +66,4 @@ backend/review.py           Claude review prompt and normalizer
 .github/workflows/pages.yml deploys the app to Pages on push
 ```
 
-API (all JSON, localhost only): `GET /api/health`, `GET /api/index`, `GET|PUT|DELETE /api/questions/:id`, `GET /api/submissions/:id`, `POST /api/submissions`, `POST /api/submissions/:id/review`, `GET /api/export`, `POST /api/import`.
+API (all JSON, localhost only): `GET /api/health`, `GET /api/index`, `GET|PUT|DELETE /api/questions/:id`, `GET /api/submissions/:id`, `POST /api/submissions`, `POST /api/submissions/:id/review`, `GET /api/export`, `POST /api/import`, `POST /api/interview/ask`, `POST /api/interview/nudge`, `GET|POST /api/plan`.

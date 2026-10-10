@@ -18,16 +18,19 @@ const SKILLS = {
   'testing':['Checking your own work','No walk-through, tests or invariants'],
   'extensibility':['Building for the next part','Earlier parts were not structured so later rules slot in'],
   'clarifying':['Clarifying the problem','Coded on assumptions instead of asking about the unstated rules'],
+  'communication':['Thinking out loud','Went quiet; the interviewer could not follow the approach as it formed'],
+  'independence':['Working without nudges','Needed the interviewer to get unstuck or to notice the clock'],
 };
-const DIMS = [['clarifying','Clarifying'],['approach','Approach'],['correctness','Correctness'],['efficiency','Efficiency'],['edgeCases','Edge cases'],['testing','Own tests'],['clarity','Clarity'],['extensibility','Extensibility']];
+const DIMS = [['clarifying','Clarifying'],['communication','Thinking aloud'],['independence','Independence'],['approach','Approach'],['correctness','Correctness'],['efficiency','Efficiency'],['edgeCases','Edge cases'],['testing','Own tests'],['clarity','Clarity'],['extensibility','Extensibility']];
 const VERDICT = ['','Not there yet','Shaky','Borderline','Solid','Strong'];
 const LANGS = {python:'Python', javascript:'JavaScript'};
 
 /* ---------- state ---------- */
-const S = { loading:true, index:null, questions:new Map(), subs:[], view:null, attempt:null, busy:null, dirty:false };
+const S = { loading:true, index:null, questions:new Map(), subs:[], view:null, attempt:null, busy:null, dirty:false, plan:null };
+const DEFAULT_PLAN = {company:'OpenAI', stages:[{name:'Phone screen', date:'2026-10-22T09:00', rounds:['Coding','Architecture'], note:'both rounds must pass'}, {name:'Onsite', date:'', rounds:['Coding','Architecture','Previous design','Behavioral'], note:'unlocked by the phone screen; dates TBD'}]};
 const $ = s => document.querySelector(s);
 const app = $('#app');
-let curEditor = null, timerInt = null;
+let curEditor = null, timerInt = null, planInt = null;
 
 /* ---------- helpers ---------- */
 const PROPS = new Set(['value','checked','disabled','hidden','selected','open']);
@@ -73,13 +76,19 @@ function hireEstimate(fullAtts, fbs){
   const recentFb = fbs.slice(-8);
   const quality = recentFb.length ? (avg(recentFb.map(f => f.overall)) - 1) / 4 * 100 : null;
   const process = recentFb.length ? (avg(recentFb.map(f => ((f.scores.clarifying || f.overall) + (f.scores.testing || f.overall)) / 2)) - 1) / 4 * 100 : null;
-  const parts = [{name:'First three parts passing', v:clean, note:'tests clean on parts 1–3, last ' + last.length + ' full attempt' + (last.length===1?'':'s')}, {name:'Inside the time budget', v:pace, note:'time on parts 1–3 vs their budgets'}, {name:'Review quality', v:quality, note:recentFb.length ? 'average verdict over the last ' + recentFb.length + ' reviews' : 'no reviews yet'}, {name:'Clarifying and testing', v:process, note:'asked the right questions, wrote own tests'}, {name:'Design readiness', v:null, note:'not measured yet'}];
-  const score = Math.round(clean*0.4 + pace*0.2 + (quality ?? 50)*0.25 + (process ?? 50)*0.15);
+  const nudgeCost = s => (s.nudges || []).reduce((x,r) => x + (r === 'stuck' ? 35 : r === 'idle' ? 15 : r === 'time100' ? 5 : 0), 0);
+  const subsSeen = last.flatMap(a => first(a).filter(Boolean));
+  const fromNudges = subsSeen.length ? avg(subsSeen.map(s => Math.max(0, 100 - nudgeCost(s)))) : null;
+  const fromScores = recentFb.filter(f => f.scores.independence).length ? (avg(recentFb.filter(f => f.scores.independence).map(f => (f.scores.independence + (f.scores.communication || f.scores.independence)) / 2)) - 1) / 4 * 100 : null;
+  const independence = fromNudges == null ? fromScores : fromScores == null ? fromNudges : (fromNudges + fromScores) / 2;
+  const nudgeTotal = subsSeen.reduce((x,s) => x + (s.nudges || []).filter(r => r === 'stuck' || r === 'idle').length, 0);
+  const parts = [{name:'First three parts passing', v:clean, note:'tests clean on parts 1–3, last ' + last.length + ' full attempt' + (last.length===1?'':'s')}, {name:'Inside the time budget', v:pace, note:'time on parts 1–3 vs their budgets'}, {name:'Review quality', v:quality, note:recentFb.length ? 'average verdict over the last ' + recentFb.length + ' reviews' : 'no reviews yet'}, {name:'Clarifying and testing', v:process, note:'asked the right questions, wrote own tests'}, {name:'Independence and narration', v:independence, note:nudgeTotal ? `${nudgeTotal} stuck/idle nudge${nudgeTotal===1?'':'s'} needed on parts 1–3; a stuck nudge costs 35 points, idle 15, overrunning a time check 5` : 'no stuck or idle nudges needed; thinking-aloud score from reviews'}, {name:'Design readiness', v:null, note:'not measured yet'}];
+  const score = Math.round(clean*0.35 + pace*0.15 + (quality ?? 50)*0.25 + (process ?? 50)*0.10 + (independence ?? 60)*0.15);
   let verdict = score >= 80 ? 'Strong hire' : score >= 65 ? 'Hire' : score >= 50 ? 'Lean hire' : score >= 35 ? 'Lean no hire' : 'No hire';
   if (verdict === 'Strong hire') verdict = 'Hire';
   const confidence = last.length >= 4 && recentFb.length >= 4 ? 'medium' : 'low';
   const weakest = parts.filter(p => p.v != null).sort((a,b) => a.v-b.v)[0];
-  const summary = `${verdict}: ${score}/100 on coding alone. ` + (weakest ? `The biggest drag is ${weakest.name.toLowerCase()} at ${Math.round(weakest.v)}%. ` : '') + (clean >= 90 && pace >= 80 ? 'The three-part bar is met; quality and questions decide the rest.' : clean < 60 ? 'Clearing parts 1–3 cleanly is the gate; everything else matters after that.' : 'Close to the bar; pace and clean follow-ups are where the points are.');
+  const summary = `${verdict}: ${score}/100 on coding alone. ` + (weakest ? `The biggest drag is ${weakest.name.toLowerCase()} at ${Math.round(weakest.v)}%. ` : '') + (independence != null && independence < 50 ? 'You needed the interviewer to get moving; interviewers who barely help will read that as a no.' : clean >= 90 && pace >= 80 ? 'The three-part bar is met; quality and questions decide the rest.' : clean < 60 ? 'Clearing parts 1–3 cleanly is the gate; everything else matters after that.' : 'Close to the bar; pace and clean follow-ups are where the points are.');
   return {verdict, score, confidence, cls:score >= 65 ? 'good' : score >= 50 ? 'warn' : 'bad', summary, parts};
 }
 const tsId = () => new Date().toISOString().replace(/[-:]/g,'').replace(/\.\d+Z$/,'Z');
@@ -129,6 +138,8 @@ const API = {
   review(id){ return this.call('POST', '/api/submissions/' + encodeURIComponent(id) + '/review'); },
   export(){ return this.call('GET', '/api/export'); },
   import(data){ return this.call('POST', '/api/import', data); },
+  plan(){ return this.call('GET', '/api/plan'); },
+  putPlan(p){ return this.call('POST', '/api/plan', p); },
 };
 
 /* ---------- data ---------- */
@@ -136,7 +147,7 @@ async function loadIndex(){
   S.health = null;
   try { S.health = await API.health(); } catch(e){ S.health = null; }
   let idx = {questions:[], submissions:[]};
-  if (S.health){ try { idx = await API.index(); } catch(e){ toast('The backend answered but the index failed: ' + e.message); } }
+  if (S.health){ try { idx = await API.index(); } catch(e){ toast('The backend answered but the index failed: ' + e.message); } try { S.plan = await API.plan(); } catch(e){ S.plan = null; } }
   S.index = idx;
   S.questions = new Map(idx.questions.map(q => [q.id, q]));
   S.subs = idx.submissions.slice().sort((a,b) => a.at.localeCompare(b.at));
@@ -418,7 +429,8 @@ function render(){
   if (timerInt){ clearInterval(timerInt); timerInt = null; }
   curEditor = null; app.replaceChildren();
   if (S.loading){ app.append(h('div',{class:'loading', text:'Opening your notebook…'})); return; }
-  if (r.view !== 'try'){ S.attempt = null; document.body.classList.remove('in-pad'); }
+  if (r.view !== 'try'){ if (S.attempt && S.attempt.voice) Voice.stop(); S.attempt = null; document.body.classList.remove('in-pad'); }
+  if (planInt){ clearInterval(planInt); planInt = null; }
   if (r.view === 'questions') renderQuestions();
   else if (r.view === 'question') renderQuestion(r.qid);
   else if (r.view === 'try') renderTry(r.qid);
@@ -432,6 +444,7 @@ function render(){
 /* ---------- questions list ---------- */
 function renderQuestions(){
   const qs = [...S.questions.values()].filter(q => q.kind !== 'drill').sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
+  app.append(renderCountdown());
   app.append(h('div',{class:'page-head'}, h('div',null, h('h2',{text:'Questions'}), h('p',{text:'Each question is a sequence of gated parts, timed separately. Submit a part to store the code, its test result and the time it took.'}))));
   if (!qs.length){ app.append(h('div',{class:'none'}, 'No questions yet. ', h('a',{href:'#/new', text:'Add the first one'}), '.')); return; }
   const grid = h('div',{class:'qgrid'});
@@ -452,6 +465,32 @@ function renderQuestions(){
       h('div',{class:'row'}, h('a',{class:'btn primary small', href:'#/q/' + q.id + '/try', text:atts.length ? 'Try again' : 'Start'}), h('a',{class:'btn small', href:'#/q/' + q.id, text:'History'}))));
   }
   app.append(grid);
+}
+
+function renderCountdown(){
+  const plan = S.plan || DEFAULT_PLAN;
+  const wrap = h('section',{class:'plan'});
+  const cards = [];
+  const draw = () => {
+    for (const {st, el} of cards){
+      el.replaceChildren();
+      if (!st.date){ el.append(h('b',{class:'tbd', text:'TBD'}), h('span',{text:st.note || ''})); continue; }
+      const ms = new Date(st.date) - Date.now();
+      if (ms <= -6*3600e3){ el.append(h('b',{class:'tbd', text:'Done'}), h('span',{text:fmtDateTime(st.date)})); continue; }
+      if (ms <= 0){ el.append(h('b',{class:'now', text:'Now'}), h('span',{text:'go get it'})); continue; }
+      const d = Math.floor(ms/864e5), hh = Math.floor(ms%864e5/36e5), mm = Math.floor(ms%36e5/6e4);
+      const big = h('b',{class:d < 7 ? 'soon' : ''}); big.append(d ? h('span',null, String(d), h('small',{text:'d'})) : null, h('span',null, String(hh), h('small',{text:'h'})), h('span',null, String(mm), h('small',{text:'m'})));
+      el.append(big, h('span',{text:new Date(st.date).toLocaleString(undefined,{weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}) + (st.note ? ' · ' + st.note : '')}));
+    }
+  };
+  for (const st of plan.stages || []){
+    const el = h('div',{class:'count'});
+    cards.push({st, el});
+    wrap.append(h('div',{class:'stage' + (st.date ? '' : ' locked')}, h('h3',{text:`${plan.company ? plan.company + ' ' : ''}${st.name}`}), h('div',{class:'rounds'}, (st.rounds || []).map(r => h('span',{text:r}))), el));
+  }
+  wrap.append(h('a',{class:'hist edit', href:'#/settings', text:'Dates'}));
+  draw(); if (planInt) clearInterval(planInt); planInt = setInterval(draw, 15000);
+  return wrap;
 }
 
 /* ---------- question detail / history ---------- */
@@ -513,7 +552,7 @@ async function renderTry(qid){
   if (!S.attempt || S.attempt.qid !== qid){
     const prev = attemptsOf(qid); const lastSub = prev.length ? prev[prev.length-1].subs.slice(-1)[0] : null;
     const rs = S.resume && S.resume.qid === qid ? S.resume : null; S.resume = null;
-    S.attempt = {qid, id:tsId(), startedAt:Date.now(), gi:rs ? rs.gi : 0, gateStartedAt:Date.now(), gateAcc:{}, code:rs ? rs.code : '', results:{}, subs:{}, lastSub, done:false, pausedAt:0, pausedTotal:0, tab:'question', console:[], reached:rs ? rs.reached : 0, chats:{}, resumedFrom:rs ? rs.from : null, typing:{}, lastEditAt:0};
+    S.attempt = {qid, id:tsId(), startedAt:Date.now(), gi:rs ? rs.gi : 0, gateStartedAt:Date.now(), gateAcc:{}, code:rs ? rs.code : '', results:{}, subs:{}, lastSub, done:false, pausedAt:0, pausedTotal:0, tab:'question', console:[], reached:rs ? rs.reached : 0, chats:{}, resumedFrom:rs ? rs.from : null, typing:{}, lastEditAt:0, lastSpokeAt:0, nudged:{}, lastNudgeAt:0, lastStuckCheckAt:0, lastStuckCode:'', voice:false};
     if (rs) toast(`Resumed with your code from ${fmtDateTime(rs.from.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, '$1-$2-$3T$4:$5:$6Z'))}; starting at part ${S.attempt.gi + 1}.`);
     if (q.lang === 'python') Runner.warm(m => { const el = $('#pyStatus'); if (el) el.textContent = m; });
   }
@@ -529,6 +568,39 @@ async function renderTry(qid){
     const st = $('#typeStat'); if (st){ const ty = typ(); const cpm = ty.activeSec >= 5 ? Math.round(ty.chars / (ty.activeSec/60)) : null; st.textContent = `${curEditor ? curEditor.lines() : 0} lines` + (cpm != null ? ` · ${cpm} cpm` : ''); }
     tGate.classList.toggle('over', !!gate.minutes && g > gate.minutes*60);
     const budget = q.gates.reduce((s,x) => s + (x.minutes||0), 0); tAll.classList.toggle('over', !!budget && all > budget*60);
+    if (!a.pausedAt && !a.subs[gate.id]) maybeNudge(q, g);
+  };
+  const nudged = () => a.nudged[gate.id] = a.nudged[gate.id] || {};
+  const pushNudge = (reason, kind, text) => {
+    const chat = a.chats[gate.id] = a.chats[gate.id] || [];
+    chat.push({role:'interviewer', kind:'nudge', reason, text, at:Date.now()});
+    a.lastNudgeAt = Date.now();
+    toast('Interviewer: ' + text); speak(text);
+    if (S.attempt === a && a.tab === 'ask') renderPadLeft(q); const b = $('#askCount'); if (b){ b.textContent = String(chat.filter(m => m.role === 'you' || m.kind === 'nudge').length); b.hidden = false; }
+  };
+  const maybeNudge = (q, g) => {
+    const n = nudged(), budget = (gate.minutes || 0) * 60, nowT = Date.now();
+    if (budget){
+      for (const [key, frac] of [['time50', 0.5], ['time80', 0.8], ['time100', 1]]){
+        if (!n[key] && g >= budget * frac){ n[key] = true; const left = Math.ceil(Math.max(0, budget - g) / 60);
+          if (key === 'time100') pushNudge('time100', 'time', "We're at time for this part. Wrap up what you have, or tell me what you'd do and we move on.");
+          else if (key === 'time80') pushNudge('time80', 'time', left <= 1 ? 'Under a minute left on this one.' : `About ${left} minutes left on this one.`);
+          else if (key === 'time50' && !(curEditor ? curEditor.get() : a.code).trim()) pushNudge('time50', 'time', `We're halfway through the time for this part.`);
+          return; } }
+    }
+    if (!(S.health && S.health.hasKey) || a.nudging) return;
+    const lastActive = Math.max(a.lastEditAt || 0, a.lastSpokeAt || 0, a.gateStartedAt);
+    const idleSec = (nowT - lastActive) / 1000, inPart = g;
+    if (idleSec >= 240 && inPart >= 180 && nowT - a.lastNudgeAt > 300000){ a.lastNudgeAt = nowT; askNudge('idle'); return; }
+    const code = curEditor ? curEditor.get() : a.code;
+    if (inPart >= 360 && nowT - a.lastStuckCheckAt > 360000 && nowT - a.lastNudgeAt > 240000 && code.trim() && code !== a.lastStuckCode){ a.lastStuckCheckAt = nowT; a.lastStuckCode = code; askNudge('stuck-check'); }
+  };
+  const askNudge = async reason => {
+    a.nudging = true;
+    try { const r = await API.call('POST', '/api/interview/nudge', {questionId:q.id, gateId:gate.id, history:chatHistory(a.chats[gate.id] || []), code:curEditor ? curEditor.get() : a.code, elapsedSec:Math.round((a.gateAcc[a.gi] || 0) + (now() - a.gateStartedAt)/1000), budgetSec:(gate.minutes || 0) * 60, reason});
+      if (S.attempt === a && !a.subs[gate.id] && r && r.text && r.kind !== 'none') pushNudge(r.kind, r.kind, r.text); }
+    catch(e){ /* a silent interviewer is still an interviewer */ }
+    a.nudging = false;
   };
   tick(); timerInt = setInterval(tick, 1000);
   const gatesNav = h('div',{class:'gates', role:'tablist'}, q.gates.map((g,i) => { const locked = i > a.reached; return h('button',{class:'gate' + (locked ? ' locked' : ''), role:'tab', disabled:locked, 'aria-current':i === a.gi ? 'true' : null, title:locked ? `Part ${i+1} is revealed when you submit part ${i}` : g.title, onclick:() => switchGate(q, i)}, h('span',{class:'pip ' + gateStatus(a.subs[g.id])}), locked ? `${i+1} 🔒` : `${i+1}`); }));
@@ -541,16 +613,18 @@ async function renderTry(qid){
     h('button',{class:'btn quiet small', id:'pauseBtn', text:a.pausedAt ? 'Resume' : 'Pause', onclick:() => { if (a.pausedAt){ a.pausedTotal += Date.now() - a.pausedAt; a.pausedAt = 0; } else a.pausedAt = Date.now(); $('#pauseBtn').textContent = a.pausedAt ? 'Resume' : 'Pause'; tick(); }}),
     hasNext && submittedHere && h('button',{class:'btn small', text:'Next part →', title:'Move on like an interviewer would, even if tests still fail', onclick:() => advanceGate(q)}),
     h('button',{class:'btn quiet small', text:'Finish', onclick:() => finishAttempt(q)}));
-  const chatN = (a.chats[gate.id] || []).filter(m => m.role === 'you').length;
+  const chatN = (a.chats[gate.id] || []).filter(m => m.role === 'you' || m.kind === 'nudge').length;
   const tabs = h('div',{class:'ptabs'},
     h('button',{class:'ptab', 'aria-current':a.tab === 'question' ? 'true' : null, text:'Question', onclick:() => { a.tab = 'question'; render(); }}),
-    h('button',{class:'ptab', 'aria-current':a.tab === 'ask' ? 'true' : null, onclick:() => { a.tab = 'ask'; render(); }}, 'Ask the interviewer', chatN ? h('span',{class:'count', text:String(chatN)}) : null),
+    h('button',{class:'ptab', 'aria-current':a.tab === 'ask' ? 'true' : null, onclick:() => { a.tab = 'ask'; render(); }}, 'Interviewer', h('span',{class:'count', id:'askCount', text:chatN ? String(chatN) : '', hidden:!chatN})),
     h('button',{class:'ptab', 'aria-current':a.tab === 'feedback' ? 'true' : null, onclick:() => { a.tab = 'feedback'; render(); }}, 'Feedback', Object.keys(a.subs).length ? h('span',{class:'count', text:String(Object.keys(a.subs).length)}) : null));
   const left = h('aside',{class:'padleft'}, tabs, h('div',{class:'padscroll', id:'padleft'}));
   const edHost = h('div',{class:'editor pad-ed'});
   const console_ = h('div',{class:'console', id:'console'});
   const right = h('section',{class:'padright'},
     h('div',{class:'edbar'}, h('span',{class:'lang', text:LANGS[q.lang] || q.lang}), h('span',{class:'hist', id:'typeStat', title:'Lines in the editor · characters typed per active minute'}), h('span',{class:'hist', id:'pyStatus'}), h('span',{class:'spacer'}),
+      Voice.supported() && h('button',{class:'btn quiet small mic' + (a.voice ? ' on' : ''), id:'micBtn', title:'Talk to the interviewer: ask a question, or just say what you are doing as you code. Click again to stop.', onclick:() => toggleVoice(q)}, a.voice ? '● Listening' : '🎙 Talk'),
+      h('span',{class:'hist', id:'micLive', 'aria-live':'polite'}),
       a.lastSub && !a.code && h('button',{class:'btn quiet small', text:'Load my last submission', onclick:async () => { const f = await fetchSubmission(a.lastSub); if (f.code){ a.code = f.code; curEditor.set(f.code); } }}),
       h('button',{class:'btn run', id:'runBtn', onclick:() => runCurrent(q)}, '▶ Run ', h('kbd',{text:'⌘↵'})),
       h('button',{class:'btn primary', id:'submitBtn', onclick:() => submitCurrent(q)}, `Submit part ${a.gi+1} `, h('kbd',{text:'⇧⌘↵'}))),
@@ -560,6 +634,52 @@ async function renderTry(qid){
   curEditor = makeEditor(edHost, {value:a.code, lang:q.lang, theme:'pad', placeholder:'# Build on the same file through the parts.\n# Your own tests go under: if __name__ == "__main__":', onChange:v => { a.code = v; }, onRun:() => runCurrent(q), onSubmit:() => submitCurrent(q), onType:st => { typ().chars += st.chars - (typ()._seen || 0); typ()._seen = st.chars; a.lastEditAt = st.lastEditAt; }});
   renderConsole();
   curEditor.focus();
+}
+const chatHistory = chat => chat.map(m => ({role:m.role, text:m.text, kind:m.kind || undefined, reason:m.reason || undefined}));
+const looksLikeQuestion = t => /\?\s*$/.test(t) || /^(what|why|how|can|could|should|is|are|do|does|did|will|would|which|where|when|may|am)\b/i.test(t) || /\b(assume|assuming|okay to|allowed to|right\?)\b/i.test(t);
+async function sayToInterviewer(q, text, spoken){
+  const a = S.attempt; if (!a) return; const gate = q.gates[a.gi];
+  const chat = a.chats[gate.id] = a.chats[gate.id] || [];
+  const kind = looksLikeQuestion(text) ? 'ask' : 'say';
+  chat.push({role:'you', kind:kind === 'say' ? 'say' : undefined, text, at:Date.now()});
+  a.lastSpokeAt = Date.now();
+  const badge = $('#askCount'); if (badge){ badge.textContent = String(chat.filter(m => m.role === 'you' || m.kind === 'nudge').length); badge.hidden = false; }
+  if (!(S.health && S.health.hasKey)){ if (kind === 'ask') toast('The interviewer needs Claude on the server to answer: see Settings. Your message is logged.'); if (a.tab === 'ask') renderPadLeft(q); return; }
+  a.asking = true; if (a.tab === 'ask') renderPadLeft(q);
+  try { const r = await API.call('POST', '/api/interview/ask', {questionId:q.id, gateId:gate.id, history:chatHistory(chat), code:curEditor ? curEditor.get() : a.code}); const ans = r.answer || '(no answer)'; chat.push({role:'interviewer', text:ans, at:Date.now()}); if (spoken) speak(ans); else if (a.tab !== 'ask') toast('Interviewer: ' + ans); }
+  catch(err){ chat.push({role:'interviewer', text:'(The interviewer could not answer: ' + err.message + ')', at:Date.now()}); }
+  a.asking = false; if (S.attempt === a && a.tab === 'ask') renderPadLeft(q);
+}
+/* voice: browser speech recognition in, speech synthesis out; nothing leaves the machine except through the browser's own speech service */
+const Voice = {
+  rec:null,
+  supported(){ return !!(window.SpeechRecognition || window.webkitSpeechRecognition); },
+  start(onFinal, onInterim, onEnd){
+    const R = window.SpeechRecognition || window.webkitSpeechRecognition; if (!R) return false;
+    const rec = this.rec = new R(); rec.continuous = true; rec.interimResults = true; rec.lang = navigator.language || 'en-US';
+    let buf = '', timer = null;
+    const flush = () => { const t = buf.trim(); buf = ''; if (t) onFinal(t); };
+    rec.onresult = e => { let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++){ const r = e.results[i]; if (r.isFinal) buf += ' ' + r[0].transcript; else interim += r[0].transcript; }
+      onInterim(interim || buf.trim()); clearTimeout(timer); if (buf.trim()) timer = setTimeout(flush, 1200); };
+    rec.onerror = e => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') toast('The browser blocked the microphone. Allow it for this site and try again.'); };
+    rec.onend = () => { flush(); if (this.rec === rec && this.keep){ try { rec.start(); return; } catch(e){} } if (this.rec === rec){ this.rec = null; onEnd(); } };
+    this.keep = true; try { rec.start(); } catch(e){ toast('Could not start listening: ' + e.message); this.rec = null; return false; }
+    return true;
+  },
+  stop(){ this.keep = false; const r = this.rec; if (r){ try { r.stop(); } catch(e){} } },
+};
+function speak(text){ const a = S.attempt; if (!a || !a.voice || !window.speechSynthesis) return; try { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text); u.rate = 1.05; speechSynthesis.speak(u); } catch(e){} }
+function toggleVoice(q){
+  const a = S.attempt; if (!a) return;
+  const btn = $('#micBtn'), live = $('#micLive');
+  if (a.voice){ Voice.stop(); a.voice = false; if (btn){ btn.textContent = '🎙 Talk'; btn.classList.remove('on'); } if (live) live.textContent = ''; return; }
+  const ok = Voice.start(t => { if (live) live.textContent = ''; if (speechSynthesis && speechSynthesis.speaking) return; sayToInterviewer(q, t, true); },
+    t => { if (live) live.textContent = t ? '“' + t.slice(-80) + '”' : ''; },
+    () => { a.voice = false; const b = $('#micBtn'); if (b){ b.textContent = '🎙 Talk'; b.classList.remove('on'); } });
+  if (!ok) return;
+  a.voice = true; btn.textContent = '● Listening'; btn.classList.add('on');
+  toast('Listening. Ask the interviewer anything, or just narrate what you are doing; the interviewer answers out loud.');
 }
 function renderPadLeft(q){
   const a = S.attempt, host = $('#padleft'); if (!a || !host) return;
@@ -575,25 +695,18 @@ function renderPadLeft(q){
     const chat = a.chats[gate.id] = a.chats[gate.id] || [];
     const log = h('div',{class:'chatlog'});
     if (!chat.length) log.append(h('p',{class:'hist', text:'The prompt leaves things unstated on purpose. Ask the way you would in the room: input sizes, empty input, ties, what to return when something is missing, whether you may assume something. What you ask is part of the grade.'}));
-    for (const m of chat) log.append(h('div',{class:'msg ' + m.role}, h('span',{class:'who', text:m.role === 'you' ? 'You' : 'Interviewer'}), h('span',{class:'txt', text:m.text})));
+    for (const m of chat) log.append(h('div',{class:'msg ' + m.role + (m.kind === 'nudge' ? ' nudge' : m.kind === 'say' ? ' say' : '')}, h('span',{class:'who', text:m.role === 'you' ? (m.kind === 'say' ? 'You, aloud' : 'You') : m.kind === 'nudge' ? 'Interviewer, unprompted' + (m.reason ? ' · ' + ({time50:'time check', time80:'time check', time100:'time', idle:'idle', stuck:'stuck'}[m.reason] || m.reason) : '') : 'Interviewer'}), h('span',{class:'txt', text:m.text})));
     if (a.asking) log.append(h('div',{class:'msg interviewer'}, h('span',{class:'who', text:'Interviewer'}), h('span',{class:'txt thinking-txt', text:'…'})));
-    const box = h('textarea',{rows:'2', placeholder:'Ask a question…', onkeydown:e => { if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); send(); } }});
-    const send = async () => {
-      const text = box.value.trim(); if (!text || a.asking) return;
-      if (!(S.health && S.health.hasKey)){ toast('The interviewer chat needs Claude on the server: see Settings.'); return; }
-      chat.push({role:'you', text, at:Date.now()}); box.value = ''; a.asking = true; renderPadLeft(q);
-      try { const r = await API.call('POST', '/api/interview/ask', {questionId:q.id, gateId:gate.id, history:chat.map(m => ({role:m.role, text:m.text})), code:curEditor ? curEditor.get() : a.code}); chat.push({role:'interviewer', text:r.answer || '(no answer)', at:Date.now()}); }
-      catch(err){ chat.push({role:'interviewer', text:'(The interviewer could not answer: ' + err.message + ')', at:Date.now()}); }
-      a.asking = false; if (S.attempt === a && a.tab === 'ask') renderPadLeft(q);
-    };
-    host.append(log, h('div',{class:'row'}, box, h('button',{class:'btn primary small', text:'Ask', onclick:send})));
+    const box = h('textarea',{rows:'2', placeholder:'Ask a question, or say what you are about to do…', onkeydown:e => { if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); send(); } }});
+    const send = () => { const text = box.value.trim(); if (!text) return; box.value = ''; sayToInterviewer(q, text, false); };
+    host.append(log, h('div',{class:'row'}, box, h('button',{class:'btn primary small', text:'Send', onclick:send})), h('p',{class:'hist', text:Voice.supported() ? 'Or press 🎙 Talk above the editor and speak; questions get answered, narration gets a nod. Nudges the interviewer gives without being asked are logged here and count against you.' : 'This browser has no speech recognition; Chrome or Safari do. Nudges the interviewer gives without being asked are logged here and count against you.'}));
     log.scrollTop = log.scrollHeight;
   } else {
     const ids = q.gates.map(g => g.id).filter(id => a.subs[id]);
     if (!ids.length) host.append(h('p',{class:'none', text:'Submit a part and its review shows here.'}));
     for (const id of ids.reverse()){
       const sub = a.subs[id], gi = q.gates.findIndex(g => g.id === id);
-      host.append(h('h3',{text:`Part ${gi+1}: ${q.gates[gi].title}`}), h('p',{class:'hist', text:`${fmtSec(sub.gateSec)}, ${sub.browser && sub.browser.total ? sub.browser.passed + '/' + sub.browser.total + ' tests' : 'not run'}, ${(sub.chat || []).filter(m => m.role === 'you').length} question(s) asked`}));
+      host.append(h('h3',{text:`Part ${gi+1}: ${q.gates[gi].title}`}), h('p',{class:'hist', text:`${fmtSec(sub.gateSec)}, ${sub.browser && sub.browser.total ? sub.browser.passed + '/' + sub.browser.total + ' tests' : 'not run'}, ${(sub.chat || []).filter(m => m.role === 'you' && m.kind !== 'say').length} question(s) asked, ${(sub.chat || []).filter(m => m.kind === 'say').length} said aloud, ${(sub.chat || []).filter(m => m.kind === 'nudge').length} nudge(s)`}));
       if (sub.feedback) host.append(renderReview(sub.feedback));
       else if (sub.reviewError) host.append(h('p',{class:'fail', text:'Review failed: ' + sub.reviewError}));
       else if (sub.pending) host.append(h('div',{class:'thinking'}, h('span',{class:'dot'}), sub.pending));
@@ -649,7 +762,7 @@ async function submitCurrent(q){
   const nowMs = (a.pausedAt || Date.now()) - a.pausedTotal;
   const sub = {id:tsId() + '-' + gate.id, questionId:q.id, gateId:gate.id, attemptId:a.id, at:new Date().toISOString(), lang:q.lang, code:a.code, lines:a.code.split('\n').length,
     elapsedSec:Math.round((nowMs - a.startedAt)/1000), gateSec:Math.round((a.gateAcc[a.gi] || 0) + (nowMs - a.gateStartedAt)/1000),
-    chat:(a.chats[gate.id] || []).map(m => ({role:m.role, text:m.text})), resumedFrom:a.resumedFrom || undefined,
+    chat:chatHistory(a.chats[gate.id] || []), resumedFrom:a.resumedFrom || undefined,
     typedChars:(a.typing[gate.id] || {}).chars || 0, activeSec:(a.typing[gate.id] || {}).activeSec || 0, cpm:(a.typing[gate.id] && a.typing[gate.id].activeSec >= 5) ? Math.round(a.typing[gate.id].chars / (a.typing[gate.id].activeSec/60)) : null,
     browser:r ? {passed:r.passed, total:r.total, runtime:r.runtime, error:r.error || '', cases:r.cases.map(c => ({raw:c.raw, pass:c.pass, got:c.got, err:c.err}))} : null};
   a.subs[gate.id] = sub;
@@ -807,7 +920,7 @@ function donut(segs, {size=170, label=''} = {}){
 function legend(segs){ return h('div',{class:'legend'}, segs.map(s => h('span',null, h('i',{style:`background:${s.color}`}), `${s.name} (${s.v})`))); }
 
 /* ---------- analytics ---------- */
-const DIM_SKILL = {clarifying:'clarifying', approach:'algo-choice', correctness:'correctness', efficiency:'complexity', edgeCases:'edge-cases', testing:'testing', clarity:'clarity', extensibility:'extensibility'};
+const DIM_SKILL = {clarifying:'clarifying', communication:'communication', independence:'independence', approach:'algo-choice', correctness:'correctness', efficiency:'complexity', edgeCases:'edge-cases', testing:'testing', clarity:'clarity', extensibility:'extensibility'};
 function bar(frac, cls, marker){
   const b = h('div',{class:'bar'}, h('i',{class:cls || '', style:`width:${Math.max(0, Math.min(100, frac*100)).toFixed(1)}%`}));
   if (marker != null) b.append(h('s',{style:`left:${Math.max(0, Math.min(100, marker*100)).toFixed(1)}%`, title:'budget'}));
@@ -842,7 +955,7 @@ function renderAnalytics(qidFilter){
     h('div',{class:'hire-body'},
       h('p',{text:est.summary}),
       h('div',{class:'hire-parts'}, est.parts.map(p => h('div',{class:'hbar'}, h('div',null, p.name, h('span',{class:'n', text:p.note})), bar(p.v/100, p.v >= 70 ? 'good' : p.v >= 45 ? 'warn' : 'bad'), h('span',{class:'val', text:p.v == null ? '–' : Math.round(p.v) + '%'})))),
-      h('p',{class:'hist', text:'How it is computed: coding readiness is 40% clean first-three parts, 20% inside budget, 25% review quality, 15% clarifying and testing, over your last five full attempts. Design readiness is not measured yet (no design rounds in Whetstone), so the overall is coding only and the verdict is capped at Hire until it is. Interviewers in the write-ups pass three clean parts with sensible questions asked; this estimate follows that bar, not a formal rubric.'}))));
+      h('p',{class:'hist', text:'How it is computed: coding readiness is 35% clean first-three parts, 15% inside budget, 25% review quality, 10% clarifying and testing, 15% independence (how many stuck/idle nudges the interviewer had to give, and the thinking-aloud and independence scores from reviews), over your last five full attempts. Design readiness is not measured yet (no design rounds in Whetstone), so the overall is coding only and the verdict is capped at Hire until it is. Interviewers in the write-ups pass three clean parts with sensible questions asked; this estimate follows that bar, not a formal rubric.'}))));
   app.append(h('div',{class:'tiles'},
     h('div',{class:'tile'}, h('b',{text:fbs.length ? avg(recent.map(f => f.overall)).toFixed(1) : '–'}), h('span',{text:fbs.length ? `quality, last ${recent.length} review${recent.length===1?'':'s'}` + (earlier.length ? ` (was ${avg(earlier.map(f => f.overall)).toFixed(1)})` : '') : 'no reviews yet'})),
     h('div',{class:'tile'}, h('b',{text:gatesTotal ? Math.round(gatesPassed/gatesTotal*100) + '%' : '–'}), h('span',{text:'parts passed, latest attempts'})),
@@ -855,7 +968,7 @@ function renderAnalytics(qidFilter){
   const fixes = [];
   if (fbs.length){
     const worst = DIMS.map(([k,label]) => ({k, label, v:dRecent[k]})).sort((x,y) => x.v-y.v)[0];
-    if (worst.v < 4) fixes.push({title:`${worst.label}: ${worst.v.toFixed(1)} of 5 lately`, why:{clarifying:'You are coding on assumptions. Ask two or three questions on the Ask the interviewer tab before writing code; it is graded.', approach:'The algorithm or data model is not the right fit often enough. Say the approach out loud (in the chat) before coding and sanity-check its complexity.', correctness:'Logic bugs are slipping through. Walk one example through the code by hand before submitting.', efficiency:'A faster approach existed. Before coding, name the complexity you are aiming for and whether the input size allows it.', edgeCases:'Empty, single and degenerate inputs are missed. Write those three tests first, every time.', testing:'Your own tests are thin. A main block with four asserts (normal, empty, single, tricky) is the habit to build.', clarity:'Reviewers find the code hard to follow. Name helpers after what they return; keep one idea per function.', extensibility:'Part N+1 forces rewrites. Keep per-entity state in one structure so a new rule is one more field.'}[worst.k], focus:DIM_SKILL[worst.k], kind:'dim'});
+    if (worst.v < 4) fixes.push({title:`${worst.label}: ${worst.v.toFixed(1)} of 5 lately`, why:{clarifying:'You are coding on assumptions. Ask two or three questions on the Ask the interviewer tab before writing code; it is graded.', communication:'You go quiet. Hit Talk and say the approach before you code, name each trade-off as you make it, and say what you would do with more time.', independence:'The interviewer had to step in. Before you stall, walk one example through by hand; when the time check comes, cut scope out loud instead of pushing on.', approach:'The algorithm or data model is not the right fit often enough. Say the approach out loud (in the chat) before coding and sanity-check its complexity.', correctness:'Logic bugs are slipping through. Walk one example through the code by hand before submitting.', efficiency:'A faster approach existed. Before coding, name the complexity you are aiming for and whether the input size allows it.', edgeCases:'Empty, single and degenerate inputs are missed. Write those three tests first, every time.', testing:'Your own tests are thin. A main block with four asserts (normal, empty, single, tricky) is the habit to build.', clarity:'Reviewers find the code hard to follow. Name helpers after what they return; keep one idea per function.', extensibility:'Part N+1 forces rewrites. Keep per-entity state in one structure so a new rule is one more field.'}[worst.k], focus:DIM_SKILL[worst.k], kind:'dim'});
   }
   const gapCount = new Map();
   for (const f of fbs) for (const g of f.gaps || []) gapCount.set(g, (gapCount.get(g)||0) + 1);
@@ -984,6 +1097,10 @@ function renderSettings(){
       h('p',null, 'Two ways to turn them on. With a Claude Pro or Max plan: install Claude Code, run ', h('code',{text:'claude'}), ' once to sign in, then restart the server; it finds the ', h('code',{text:'claude'}), ' command and uses your plan, no API key needed. Or put an API key in ', h('code',{text:'config.json'}), ' in the data folder (', h('code',{text:'{"anthropicApiKey": "sk-ant-…"}'}), '), which is billed separately. Nothing about your account reaches this page.')),
     h('section',null, h('h3',{text:'Files, no clicks needed'}),
       h('p',null, 'Every question is a Markdown file in ', h('code',{text:hl ? hl.questionsDir : '~/.whetstone/questions'}), '; edit or add one there and the server picks it up within seconds, and edits made here are written back. Drop any question or backup file into ', h('code',{text:hl ? hl.inboxDir : '~/.whetstone/inbox'}), ' to import it. ', h('code',{text:hl ? hl.backupDir + '/latest.json' : '~/.whetstone/backup/latest.json'}), ' is a full export rewritten after every change, with daily snapshots beside it; if the database is ever empty the server restores from it on its own.')),
+    h('section',null, h('h3',{text:'Interview dates'}),
+      h('p',{text:'The countdown on the Questions page. A stage without a date shows TBD.'}),
+      ((S.plan || DEFAULT_PLAN).stages || []).map((st, i) => h('label',{class:'field'}, h('span',{text:`${st.name}: ${(st.rounds || []).join(', ')}`}), h('input',{type:'datetime-local', value:st.date || '', 'data-stage':String(i)}))),
+      h('div',{class:'row'}, h('button',{class:'btn primary', text:'Save dates', disabled:!hl, onclick:async () => { const plan = JSON.parse(JSON.stringify(S.plan || DEFAULT_PLAN)); for (const inp of document.querySelectorAll('input[data-stage]')) plan.stages[Number(inp.dataset.stage)].date = inp.value; try { S.plan = await API.putPlan(plan); toast('Dates saved.'); } catch(e){ toast(e.message); } }}))),
     h('section',null, h('h3',{text:'Backup and restore'}),
       h('p',{text:'Or from here: export everything as one JSON file, or import such a file to merge it in.'}),
       h('div',{class:'row'},

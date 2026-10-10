@@ -305,6 +305,12 @@ class Files:
         threading.Thread(target=self.loop, daemon=True).start()
 
 
+DEFAULT_PLAN = {"company": "OpenAI", "stages": [
+    {"name": "Phone screen", "date": "2026-10-22T09:00", "rounds": ["Coding", "Architecture"], "note": "both rounds must pass"},
+    {"name": "Onsite", "date": "", "rounds": ["Coding", "Architecture", "Previous design", "Behavioral"], "note": "unlocked by the phone screen; dates TBD"},
+]}
+
+
 def slugify(s):
     s = re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:60]
     return s or "question"
@@ -315,7 +321,10 @@ def summarize_submission(s):
         "id": s["id"], "questionId": s["questionId"], "gateId": s["gateId"], "attemptId": s.get("attemptId"), "at": s["at"],
         "elapsedSec": s.get("elapsedSec"), "gateSec": s.get("gateSec"), "lines": s.get("lines"), "cpm": s.get("cpm"), "activeSec": s.get("activeSec"),
         "passed": run.get("passed"), "total": run.get("total"), "runtime": run.get("runtime"),
-        "status": s.get("status", "done"), "feedback": s.get("feedback"), "questionsAsked": len(s.get("chat") or []) // 2,
+        "status": s.get("status", "done"), "feedback": s.get("feedback"),
+        "questionsAsked": sum(1 for m in (s.get("chat") or []) if m.get("role") == "you" and m.get("kind") != "say"),
+        "spoken": sum(1 for m in (s.get("chat") or []) if m.get("role") == "you" and m.get("kind") == "say"),
+        "nudges": [m.get("reason") for m in (s.get("chat") or []) if m.get("kind") == "nudge"],
     }
 
 
@@ -441,6 +450,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, s) if s else self._json(404, {"error": "not found"})
         if p == "/api/export":
             return self._json(200, st.export())
+        if p == "/api/plan":
+            f = self.app.files.data / "plan.json"
+            if f.exists():
+                try:
+                    return self._json(200, json.loads(f.read_text()))
+                except json.JSONDecodeError:
+                    pass
+            return self._json(200, DEFAULT_PLAN)
         if p.startswith("/api/"):
             return self._json(404, {"error": "no such route"})
         return self._static(p)
@@ -536,6 +553,26 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 return self._json(502, {"error": "interviewer did not answer: %s" % str(e)[:300]})
             return self._json(200, {"answer": ans})
+        if p == "/api/interview/nudge":
+            body = self._body()
+            q = st.question(str(body.get("questionId") or ""))
+            gi = next((i for i, g in enumerate(q["gates"]) if g["id"] == body.get("gateId")), None) if q else None
+            if gi is None:
+                return self._json(404, {"error": "unknown question or part"})
+            if not self.app.can_review:
+                return self._json(200, {"kind": "none", "text": ""})
+            history = [m for m in (body.get("history") or []) if isinstance(m, dict)][-12:]
+            try:
+                n = reviewer.nudge(q, gi, history, str(body.get("code") or ""), int(body.get("elapsedSec") or 0), int(body.get("budgetSec") or 0), str(body.get("reason") or "time80")[:20], self.app.reviewer)
+            except Exception as e:  # noqa: BLE001
+                return self._json(200, {"kind": "none", "text": "", "error": str(e)[:200]})
+            return self._json(200, n)
+        if p == "/api/plan":
+            plan = self._body()
+            if not isinstance(plan, dict) or not isinstance(plan.get("stages"), list):
+                return self._json(400, {"error": "plan needs a stages list"})
+            (self.app.files.data / "plan.json").write_text(json.dumps(plan, indent=1) + "\n")
+            return self._json(200, plan)
         if p.startswith("/api/questions/") and p.endswith("/revise"):
             qid = unquote(p.split("/")[3])
             md, sol = self.app.question_markdown(qid)
