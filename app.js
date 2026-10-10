@@ -469,7 +469,7 @@ function renderQuestions(){
 
 function renderCountdown(){
   const plan = S.plan || DEFAULT_PLAN;
-  const wrap = h('section',{class:'plan'});
+  const wrap = h('section',{class:'plan'}), outer = h('div',{class:'planwrap'}, h('div',{class:'row'}, h('h4',{text:'Upcoming interviews'}), h('span',{class:'spacer'}), h('a',{class:'hist', href:'#/settings', text:'Edit dates'})), wrap);
   const cards = [];
   const draw = () => {
     for (const {st, el} of cards){
@@ -488,9 +488,8 @@ function renderCountdown(){
     cards.push({st, el});
     wrap.append(h('div',{class:'stage' + (st.date ? '' : ' locked')}, h('h3',{text:`${plan.company ? plan.company + ' ' : ''}${st.name}`}), h('div',{class:'rounds'}, (st.rounds || []).map(r => h('span',{text:r}))), el));
   }
-  wrap.append(h('a',{class:'hist edit', href:'#/settings', text:'Dates'}));
   draw(); if (planInt) clearInterval(planInt); planInt = setInterval(draw, 15000);
-  return wrap;
+  return outer;
 }
 
 /* ---------- question detail / history ---------- */
@@ -688,7 +687,7 @@ function renderPadLeft(q){
   if (a.tab === 'question'){
     put(host, h('h3',{text:`Part ${a.gi+1} of ${q.gates.length}: ${gate.title}`}), a.gi > 0 && h('p',{class:'hist', text:'Follow-up. Build on your current code; earlier parts should keep working.'}), promptEl(gate.prompt));
     if (a.gi < q.gates.length - 1) host.append(h('p',{class:'hist', text:`${q.gates.length - a.gi - 1} more part${q.gates.length - a.gi - 1 === 1 ? '' : 's'} follow; each is revealed when you submit the one before it.`}));
-    host.append(h('p',{class:'hist', text:gate.entry ? `Define ${gate.entry}(...) at top level; hidden tests call it when you submit. Your own tests go under if __name__ == "__main__": and Run executes them.` : 'No entry function set on this part.'}), gate.spec && h('p',{class:'hist', text:'Details are deliberately left out. Use “Ask the interviewer” for anything unclear; your questions count toward the grade.'}));
+    put(host, h('p',{class:'hist', text:gate.entry ? `Define ${gate.entry}(...) at top level; hidden tests call it when you submit. Your own tests go under if __name__ == "__main__": and Run executes them.` : 'No entry function set on this part.'}), !!gate.spec && h('p',{class:'hist', text:'Details are deliberately left out. Use the Interviewer tab (or Talk) for anything unclear; your questions count toward the grade.'}));
     if (a.gi > 0) host.append(h('details',{class:'earlier'}, h('summary',{text:'Earlier parts'}), q.gates.slice(0, a.gi).map((g,i) => h('div',null, h('h4',{text:`Part ${i+1}: ${g.title}`}), promptEl(g.prompt, 'prompt small')))));
     if (q.overview) host.append(h('details',{class:'earlier', open:a.gi === 0}, h('summary',{text:'Overview'}), promptEl(q.overview, 'prompt small')));
   } else if (a.tab === 'ask'){
