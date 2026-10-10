@@ -14,7 +14,13 @@
     entry: days_to_infect
     minutes: 12
 
-    Prompt for this part.
+    Prompt for this part, the way the interviewer would say it (brief, with
+    details left for the candidate to ask about).
+
+    ```spec
+    The precise rules: the interviewer's answer key for clarifying questions.
+    Hidden from the candidate; the tests follow it.
+    ```
 
     ```tests
     [[[0,0,0],[0,1,0],[0,0,0]]] => 2
@@ -26,7 +32,7 @@ The id is the file name (without extension). `parse` and `render` round-trip.
 """
 import re
 
-FRONT = ("title", "topic", "difficulty", "lang", "source", "url", "createdAt")
+FRONT = ("title", "topic", "difficulty", "lang", "source", "url", "createdAt", "kind", "variantOf", "skills")
 PART_RE = re.compile(r"^##\s+(?:Part\s+\d+\s*[:.\-]\s*)?(.+?)\s*$", re.M)
 KV_RE = re.compile(r"^(entry|minutes|id)\s*:\s*(.*?)\s*$")
 
@@ -52,6 +58,10 @@ def parse(text, qid):
         m = re.search(r"```tests[^\n]*\n(.*?)```", content, re.S)
         if m:
             gate["tests"] = m.group(1).strip("\n")
+            content = content[:m.start()] + content[m.end():]
+        m = re.search(r"```spec[^\n]*\n(.*?)```", content, re.S)
+        if m:
+            gate["spec"] = m.group(1).strip("\n")
             content = content[:m.start()] + content[m.end():]
         prompt_lines = []
         for line in content.splitlines():
@@ -93,6 +103,8 @@ def render(q):
         if g.get("minutes"):
             out.append("minutes: %s" % g["minutes"])
         out += ["", (g.get("prompt") or "").strip(), ""]
+        if (g.get("spec") or "").strip():
+            out += ["```spec", g["spec"].strip("\n"), "```", ""]
         if g.get("tests", "").strip():
             out += ["```tests", g["tests"].strip("\n"), "```"]
     return "\n".join(out).rstrip() + "\n"

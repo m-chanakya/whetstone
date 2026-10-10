@@ -321,3 +321,27 @@ details.draftbox .row{margin-top:8px}
 .gate.locked{opacity:.45;cursor:not-allowed}
 .gate:disabled:hover{color:var(--muted)}
 .prompt code{font:400 .88em var(--font-m);background:var(--sunk);padding:1px 5px;border-radius:4px;white-space:nowrap}
+
+/* charts */
+.chart{width:100%;height:auto;display:block;max-width:640px}
+.chart .grid{stroke:var(--line);stroke-width:1}
+.chart .tick{font:500 10px var(--font-b);fill:var(--muted)}
+.chart .val-txt{font:600 11px var(--font-m);fill:var(--ink)}
+.chart .series{fill:none;stroke:var(--pen);stroke-width:2;stroke-linejoin:round}
+.chart .dot-pt{fill:var(--pen);stroke:var(--surface);stroke-width:2}
+.chart.donut{max-width:170px;flex:none}
+.donut-lbl{font:600 11px var(--font-b);fill:#fff}
+.legend{display:flex;flex-direction:column;gap:4px;font-size:.85rem}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.fixes{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.fix{display:grid;grid-template-columns:auto 1fr;gap:12px;background:var(--surface);border-radius:8px;padding:14px;border-left:4px solid var(--hi)}
+.fix-n{font:700 1.6rem/1 var(--font-d);color:var(--muted)}
+.fix p{margin-top:4px;font-size:.92rem;color:var(--muted)}
+/* interviewer chat */
+.chatlog{display:flex;flex-direction:column;gap:8px;min-height:120px}
+.msg{display:grid;grid-template-columns:auto 1fr;gap:8px;font-size:.93rem;padding:8px 10px;border-radius:8px;background:var(--paper)}
+.msg.you{background:var(--pen-soft)}
+.msg .who{font-weight:600;color:var(--muted);font-size:.8rem;padding-top:2px;min-width:5.5em}
+.msg .txt{white-space:pre-wrap}
+.thinking-txt{animation:pulse 1.2s ease-in-out infinite}
+.padscroll textarea{flex:1;min-width:0}

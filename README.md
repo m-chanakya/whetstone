@@ -7,8 +7,9 @@ A private interview-practice notebook. The app code is public (this repo, served
 - **Timed attempts.** One clock for the attempt, one per part, with pause. Submitting a part stores the code, test results and both times.
 - **Claude reviews**, run by the local server through Claude Code on your Claude plan (or an API key): a 1–5 verdict, seven dimensions (approach, correctness, efficiency, edge cases, your own tests, clarity, extensibility), named issues with fixes, skill gaps that add up across questions, and the code rewritten the way a strong candidate would have written it, with the reasons.
 - **Questions from pasted text.** Paste a forum post or interviewer notes; Claude writes the parts, tests and a reference solution, and the server verifies the solution against the tests before you save.
-- **An interview-style pad.** Question on the left, dark editor and output console on the right, part tabs, timers. `⌘↵` runs your file as a script, so you write and run your own tests; `⇧⌘↵` submits, which grades against hidden tests and sends the code (tests included) for review. Follow-up parts are revealed only as you submit.
-- **Analytics** aimed at the interview: readiness (first three parts clean, in time, at quality), where attempts stall by part, time against budget, quality by dimension and topic, recurring gaps, progress across attempts.
+- **An interview-style pad.** The prompt is what the interviewer would say, with the fine rules deliberately left out; an *Ask the interviewer* chat (Claude, working from a hidden spec) answers clarifying questions, and what you ask is graded. Dark editor and output console, part tabs, timers. `⌘↵` runs your file as a script with your own tests; `⇧⌘↵` submits, which grades against hidden tests and sends code, tests and chat for review. Follow-ups are revealed only as you submit; any past attempt can be resumed.
+- **Drills and variants.** Claude writes short single-part drills around a skill gap or topic (verified before saving), and new full questions in the style of your own ones with a different scenario. *Revise with Claude* on a question's Edit page changes parts, spec, tests and reference solution together.
+- **Analytics** that say what to fix next: the three most actionable findings with a drill button each, quality and pass-rate trends, per-dimension scores with movement, where full attempts end, pace against budget, recurring gaps.
 
 ## Run it
 
@@ -34,7 +35,7 @@ Open `http://localhost:8787` and work there. The GitHub Pages copy at https://m-
 
 Everything in `data/` is meant to be handled without the UI:
 
-- `questions/<id>.md` — one Markdown file per question (front matter, then one `## Part N: title` section per gate with `entry:`, `minutes:`, the prompt, and a ```` ```tests ```` block). Add or edit files here and the server syncs them within seconds; edits in the UI are written back. `.json` works too.
+- `questions/<id>.md` — one Markdown file per question (front matter, then one `## Part N: title` section per gate with `entry:`, `minutes:`, the spoken prompt, a ```` ```spec ```` block with the hidden rules the interviewer answers from, and a ```` ```tests ```` block). `kind: drill` marks a drill. Add or edit files here and the server syncs them within seconds; edits in the UI are written back. `.json` works too.
 - `inbox/` — drop a question (`.md` or `.json`) or a backup/export file here and it is imported within seconds, then renamed `.imported`. Drop a `.txt` with pasted question text (a forum post, interviewer notes) and Claude turns it into a full question: parts, entry functions, test cases and a reference solution, which the server runs against every test before the question is written to `questions/`. `whetstone.sh add FILE…` does the copy for you. The same thing is on the Add question page as a paste box.
 - `backup/latest.json` — full export, rewritten after every change, plus daily snapshots. If the database is ever missing or empty, the server restores from it automatically. `whetstone.sh backup` writes a timestamped export; `whetstone.sh restore FILE` merges one back.
 - `whetstone.db` — the SQLite database itself.

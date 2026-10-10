@@ -315,12 +315,12 @@ def summarize_submission(s):
         "id": s["id"], "questionId": s["questionId"], "gateId": s["gateId"], "attemptId": s.get("attemptId"), "at": s["at"],
         "elapsedSec": s.get("elapsedSec"), "gateSec": s.get("gateSec"), "lines": s.get("lines"),
         "passed": run.get("passed"), "total": run.get("total"), "runtime": run.get("runtime"),
-        "status": s.get("status", "done"), "feedback": s.get("feedback"),
+        "status": s.get("status", "done"), "feedback": s.get("feedback"), "questionsAsked": len(s.get("chat") or []) // 2,
     }
 
 
 def summarize_question(q):
-    return {k: q.get(k) for k in ("id", "title", "topic", "difficulty", "lang", "source", "url", "createdAt")} | {
+    return {k: q.get(k) for k in ("id", "title", "topic", "difficulty", "lang", "source", "url", "createdAt", "kind", "variantOf", "skills")} | {
         "gates": [{k: g.get(k) for k in ("id", "title", "entry", "minutes")} for g in q.get("gates", [])]}
 
 
@@ -337,6 +337,30 @@ class App:
 
     def draft_question(self, text, hint="", slug=None):
         return drafter.draft(text, self.reviewer, hint, slug)
+
+    def save_generated(self, d, prefer_id=None):
+        """Store a generated question (draft dict) under a free id; write its files."""
+        q = d["question"]
+        base = slugify(prefer_id or q.get("title") or "question")
+        q["id"] = base
+        n = 2
+        while self.store.question(q["id"]):
+            q["id"] = "%s-%d" % (base, n)
+            n += 1
+        q.setdefault("createdAt", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        self.store.put_question(q)
+        self.files.write_question(q)
+        if d.get("solution"):
+            (self.files.qdir / (q["id"] + ".solution.py")).write_text(d["solution"])
+        self.files.mark_dirty()
+        return q
+
+    def question_markdown(self, qid):
+        q = self.store.question(qid)
+        if not q:
+            return None, None
+        sol_path = self.files.qdir / (qid + ".solution.py")
+        return qmd.render(q), (sol_path.read_text() if sol_path.exists() else "")
 
     def evaluate(self, sid):
         """Background: CPython grade, then Claude review."""
@@ -498,6 +522,80 @@ class Handler(BaseHTTPRequestHandler):
                 q["id"] = "%s-%d" % (base, n)
                 n += 1
             return self._json(200, {"question": q, "solution": d["solution"], "report": d["report"], "notes": d["notes"]})
+        if p == "/api/interview/ask":
+            body = self._body()
+            q = st.question(str(body.get("questionId") or ""))
+            gi = next((i for i, g in enumerate(q["gates"]) if g["id"] == body.get("gateId")), None) if q else None
+            if gi is None:
+                return self._json(404, {"error": "unknown question or part"})
+            if not self.app.can_review:
+                return self._json(409, {"error": "The interviewer chat needs Claude: see Settings."})
+            history = [m for m in (body.get("history") or []) if isinstance(m, dict)][-20:]
+            try:
+                ans = reviewer.interview_answer(q, gi, history, str(body.get("code") or ""), self.app.reviewer)
+            except Exception as e:  # noqa: BLE001
+                return self._json(502, {"error": "interviewer did not answer: %s" % str(e)[:300]})
+            return self._json(200, {"answer": ans})
+        if p.startswith("/api/questions/") and p.endswith("/revise"):
+            qid = unquote(p.split("/")[3])
+            md, sol = self.app.question_markdown(qid)
+            if md is None:
+                return self._json(404, {"error": "not found"})
+            if not self.app.can_review:
+                return self._json(409, {"error": "Revising needs Claude: see Settings."})
+            instruction = str(self._body().get("instruction") or "").strip()
+            if len(instruction) < 5:
+                return self._json(400, {"error": "Say what to change."})
+            try:
+                d = drafter.revise(md, sol, instruction, self.app.reviewer, qid)
+            except Exception as e:  # noqa: BLE001
+                return self._json(502, {"error": "revision failed: %s" % str(e)[:300]})
+            old = st.question(qid)
+            d["question"]["createdAt"] = old.get("createdAt")
+            return self._json(200, {"question": d["question"], "solution": d["solution"], "report": d["report"], "notes": d["notes"]})
+        if p.startswith("/api/questions/") and p.endswith("/variant"):
+            qid = unquote(p.split("/")[3])
+            md, sol = self.app.question_markdown(qid)
+            if md is None:
+                return self._json(404, {"error": "not found"})
+            if not self.app.can_review:
+                return self._json(409, {"error": "Generating needs Claude: see Settings."})
+            body = self._body()
+            examples = [md]
+            for other in (body.get("alsoFrom") or [])[:2]:
+                m2, _ = self.app.question_markdown(str(other))
+                if m2:
+                    examples.append(m2)
+            try:
+                d = drafter.variant(examples, self.app.reviewer, str(body.get("hint") or ""), variant_of=qid)
+            except Exception as e:  # noqa: BLE001
+                return self._json(502, {"error": "generation failed: %s" % str(e)[:300]})
+            q = self.app.save_generated(d)
+            return self._json(200, {"question": summarize_question(q), "report": d["report"], "notes": d["notes"]})
+        if p == "/api/drills/generate":
+            if not self.app.can_review:
+                return self._json(409, {"error": "Generating needs Claude: see Settings."})
+            body = self._body()
+            focus = str(body.get("focus") or "").strip()[:200] or "general problem solving"
+            count = max(1, min(5, int(body.get("count") or 3)))
+            minutes = max(5, min(30, int(body.get("minutes") or 12)))
+            examples = []
+            for other in (body.get("examples") or [])[:2]:
+                m2, _ = self.app.question_markdown(str(other))
+                if m2:
+                    examples.append(m2)
+            try:
+                ds = drafter.drills(focus, count, examples, self.app.reviewer, minutes, str(body.get("hint") or ""))
+            except Exception as e:  # noqa: BLE001
+                return self._json(502, {"error": "generation failed: %s" % str(e)[:300]})
+            made, errors = [], []
+            for d in ds:
+                if d.get("error"):
+                    errors.append(d["error"])
+                    continue
+                q = self.app.save_generated(d)
+                made.append({"question": summarize_question(q), "report": d["report"]})
+            return self._json(200, {"made": made, "errors": errors})
         if p == "/api/import":
             n = st.import_(self._body())
             self.app.files.export_all_questions()

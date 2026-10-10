@@ -17,8 +17,9 @@ const SKILLS = {
   'language':['Language idioms','Fighting the language or missing its standard tools'],
   'testing':['Checking your own work','No walk-through, tests or invariants'],
   'extensibility':['Building for the next part','Earlier parts were not structured so later rules slot in'],
+  'clarifying':['Clarifying the problem','Coded on assumptions instead of asking about the unstated rules'],
 };
-const DIMS = [['approach','Approach'],['correctness','Correctness'],['efficiency','Efficiency'],['edgeCases','Edge cases'],['testing','Own tests'],['clarity','Clarity'],['extensibility','Extensibility']];
+const DIMS = [['clarifying','Clarifying'],['approach','Approach'],['correctness','Correctness'],['efficiency','Efficiency'],['edgeCases','Edge cases'],['testing','Own tests'],['clarity','Clarity'],['extensibility','Extensibility']];
 const VERDICT = ['','Not there yet','Shaky','Borderline','Solid','Strong'];
 const LANGS = {python:'Python', javascript:'JavaScript'};
 
@@ -359,6 +360,7 @@ function renderReview(fb){
   if (fb.strengths && fb.strengths.length) body.append(h('div',null, h('div',{class:'label', text:'What worked'}), h('ul',null, fb.strengths.map(s => h('li',{text:s})))));
   if (fb.gaps && fb.gaps.length) body.append(h('div',{class:'gaps'}, h('span',{class:'label', text:'Counted toward your weak areas:'}), fb.gaps.map(g => h('span',{class:'mark', text:(SKILLS[g]||[g])[0]}))));
   if (fb.nextStep) body.append(h('p',{class:'next'}, h('strong',{text:'Practise next: '}), fb.nextStep));
+  if (fb.questionsToAsk && fb.questionsToAsk.length) body.append(h('div',null, h('div',{class:'label', text:'Questions a strong candidate would have asked'}), h('ul',null, fb.questionsToAsk.map(s => h('li',{text:s})))));
   if (fb.improvedCode && fb.improvedCode.trim()){
     const host = h('div',{class:'editor short pad-ed'});
     const det = h('details',{class:'improved', ontoggle:e => { if (e.target.open && !host.dataset.ready){ host.dataset.ready = '1'; makeEditor(host, {value:fb.improvedCode, lang:fb.lang || 'python', readOnly:true, theme:'pad'}); } }},
@@ -385,13 +387,14 @@ function route(){
   if (p0 === 'analytics') return {view:'analytics', qid:p1};
   if (p0 === 'settings') return {view:'settings'};
   if (p0 === 'new') return {view:'edit'};
+  if (p0 === 'drills') return {view:'drills'};
   if (p0 === 'q' && p1) return {view:p2 === 'edit' ? 'edit' : p2 === 'try' ? 'try' : 'question', qid:p1};
   return {view:'questions'};
 }
 window.addEventListener('hashchange', () => { if (S.attempt && !S.attempt.done && route().view !== 'try' && !confirm('Leave this attempt? Unsubmitted code is kept in the editor only until you leave.')){ location.hash = '#/q/' + S.attempt.qid + '/try'; return; } render(); });
 function render(){
   const r = route(); S.view = r.view;
-  for (const a of document.querySelectorAll('.tab')) a.toggleAttribute('aria-current', false), (a.dataset.view === r.view || (a.dataset.view === 'questions' && ['question','try','edit'].includes(r.view))) && a.setAttribute('aria-current','page');
+  for (const a of document.querySelectorAll('.tab')) a.toggleAttribute('aria-current', false), (a.dataset.view === r.view || (a.dataset.view === 'questions' && ['question','try','edit'].includes(r.view) && !(S.questions.get(r.qid) || {}).kind)) && a.setAttribute('aria-current','page');
   if (timerInt){ clearInterval(timerInt); timerInt = null; }
   curEditor = null; app.replaceChildren();
   if (S.loading){ app.append(h('div',{class:'loading', text:'Opening your notebook…'})); return; }
@@ -401,13 +404,14 @@ function render(){
   else if (r.view === 'try') renderTry(r.qid);
   else if (r.view === 'edit') renderEdit(r.qid);
   else if (r.view === 'analytics') renderAnalytics(r.qid);
+  else if (r.view === 'drills') renderDrills();
   else renderSettings();
   window.scrollTo(0,0);
 }
 
 /* ---------- questions list ---------- */
 function renderQuestions(){
-  const qs = [...S.questions.values()].sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
+  const qs = [...S.questions.values()].filter(q => q.kind !== 'drill').sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
   app.append(h('div',{class:'page-head'}, h('div',null, h('h2',{text:'Questions'}), h('p',{text:'Each question is a sequence of gated parts, timed separately. Submit a part to store the code, its test result and the time it took.'}))));
   if (!qs.length){ app.append(h('div',{class:'none'}, 'No questions yet. ', h('a',{href:'#/new', text:'Add the first one'}), '.')); return; }
   const grid = h('div',{class:'qgrid'});
@@ -418,7 +422,7 @@ function renderQuestions(){
     const bar = h('div',{class:'gatebar', role:'img', 'aria-label':`${last ? last.passed : 0} of ${q.gates.length} parts passed in the latest attempt`}, q.gates.map(g => h('i',{class:last ? gateStatus(last.gates.get(g.id)) : ''})));
     grid.append(h('article',{class:'qcard'},
       h('h3',null, h('a',{href:'#/q/' + q.id, text:q.title})),
-      h('div',{class:'qmeta'}, h('span',{class:'diff d-' + q.difficulty, text:q.difficulty[0].toUpperCase() + q.difficulty.slice(1)}), q.topic && h('span',{text:q.topic}), h('span',{text:`${q.gates.length} part${q.gates.length===1?'':'s'}`}), h('span',{text:LANGS[q.lang] || q.lang}), null),
+      h('div',{class:'qmeta'}, h('span',{class:'diff d-' + q.difficulty, text:q.difficulty[0].toUpperCase() + q.difficulty.slice(1)}), q.topic && h('span',{text:q.topic}), h('span',{text:`${q.gates.length} part${q.gates.length===1?'':'s'}`}), h('span',{text:LANGS[q.lang] || q.lang}), q.variantOf && h('span',{text:'variant of ' + ((S.questions.get(q.variantOf) || {}).title || q.variantOf)})),
       bar,
       h('div',{class:'stats'},
         h('div',{class:'stat'}, h('b',{text:last ? `${last.passed}/${q.gates.length}` : '–'}), h('span',{text:last ? 'parts passed, last attempt' : 'not attempted'})),
@@ -439,6 +443,9 @@ async function renderQuestion(qid){
     h('div',null, h('a',{class:'btn quiet small', href:'#/', text:'All questions'}), h('h2',{style:'margin-top:8px', text:q.title}),
       h('p',{text:[q.topic, q.difficulty, q.source].filter(Boolean).join(', ')}), q.url && h('p',null, h('a',{href:q.url, target:'_blank', rel:'noopener', text:'Source'}))),
     h('div',{class:'row'}, h('a',{class:'btn primary', href:'#/q/' + qid + '/try', text:'Start an attempt'}), h('a',{class:'btn', href:'#/q/' + qid + '/edit', text:'Edit'}), h('a',{class:'btn', href:'#/analytics/' + qid, text:'Analytics'}),
+      S.health && S.health.hasKey && h('button',{class:'btn', text:'Similar question', title:'Claude writes a new question in this style with a different scenario', onclick:async e => { e.target.disabled = true; e.target.textContent = 'Writing a similar question (1–3 min)…';
+        try { const r = await API.call('POST', '/api/questions/' + encodeURIComponent(qid) + '/variant', {}); await loadIndex(); toast(r.report.ok ? 'New question verified and saved.' : 'New question saved; some tests did not verify, check its Edit page.'); location.hash = '#/q/' + r.question.id; }
+        catch(err){ toast(err.message); e.target.disabled = false; e.target.textContent = 'Similar question'; } }}),
       h('button',{class:'btn quiet', text:'Delete', onclick:async () => { if (!confirm('Delete this question and every submission for it?')) return; try { await API.deleteQuestion(qid); await boot(); location.hash = '#/'; } catch(e){ toast(e.message); } }}))));
   if (q.overview){ const o = promptEl(q.overview); o.style.cssText = 'max-width:80ch;margin-bottom:18px'; app.append(o); }
   app.append(h('div',{class:'section'}, h('h3',{text:'Parts'}), h('table',null, h('thead',null, h('tr',null, h('th',{text:'#'}), h('th',{text:'Part'}), h('th',{text:'Entry'}), h('th',{class:'num', text:'Budget'}), h('th',{class:'num', text:'Tests'}))),
@@ -453,7 +460,9 @@ async function renderQuestion(qid){
         h('td',{class:'num', text:s && s.feedback ? s.feedback.overall + '/5' : s && (s.status === 'grading' || s.status === 'reviewing') ? 'pending' : '–'}),
         h('td',{text:s && s.feedback ? s.feedback.gaps.map(x => (SKILLS[x]||[x])[0]).join(', ') : ''}),
         h('td',null, s && h('button',{class:'link', text:'Open', onclick:() => openSubmission(q, g, i, s)}))); })));
-    sec.append(h('h4',{style:'margin-top:8px', text:`${fmtDateTime(a.at)}: ${a.passed}/${q.gates.length} parts, ${fmtSec(a.totalSec)}${a.quality != null ? ', quality ' + a.quality.toFixed(1) : ''}`}), tbl);
+    const lastGate = q.gates.reduce((m, g, i) => a.gates.get(g.id) ? i : m, -1);
+    sec.append(h('div',{class:'row', style:'margin-top:8px'}, h('h4',{text:`${fmtDateTime(a.at)}: ${a.passed}/${q.gates.length} parts, ${fmtSec(a.totalSec)}${a.quality != null ? ', quality ' + a.quality.toFixed(1) : ''}`}), h('span',{class:'spacer'}),
+      h('button',{class:'btn small', text:'Resume from here', title:'New attempt with this code loaded, starting at the next part', onclick:async () => { const last = a.gates.get(q.gates[lastGate].id); const full = await fetchSubmission(last); S.resume = {qid, code:full.code || '', gi:Math.min(lastGate + (gateStatus(last) === 'pass' ? 1 : 0), q.gates.length - 1), reached:Math.min(lastGate + 1, q.gates.length - 1), from:a.id}; location.hash = '#/q/' + qid + '/try'; }})), tbl);
   }
   app.append(sec);
 }
@@ -483,7 +492,9 @@ async function renderTry(qid){
   if (S.view !== 'try') return;
   if (!S.attempt || S.attempt.qid !== qid){
     const prev = attemptsOf(qid); const lastSub = prev.length ? prev[prev.length-1].subs.slice(-1)[0] : null;
-    S.attempt = {qid, id:tsId(), startedAt:Date.now(), gi:0, gateStartedAt:Date.now(), gateAcc:{}, code:'', results:{}, subs:{}, lastSub, done:false, pausedAt:0, pausedTotal:0, tab:'question', console:[], reached:0};
+    const rs = S.resume && S.resume.qid === qid ? S.resume : null; S.resume = null;
+    S.attempt = {qid, id:tsId(), startedAt:Date.now(), gi:rs ? rs.gi : 0, gateStartedAt:Date.now(), gateAcc:{}, code:rs ? rs.code : '', results:{}, subs:{}, lastSub, done:false, pausedAt:0, pausedTotal:0, tab:'question', console:[], reached:rs ? rs.reached : 0, chats:{}, resumedFrom:rs ? rs.from : null};
+    if (rs) toast(`Resumed with your code from ${fmtDateTime(rs.from.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, '$1-$2-$3T$4:$5:$6Z'))}; starting at part ${S.attempt.gi + 1}.`);
     if (q.lang === 'python') Runner.warm(m => { const el = $('#pyStatus'); if (el) el.textContent = m; });
   }
   document.body.classList.add('in-pad');
@@ -507,8 +518,10 @@ async function renderTry(qid){
     h('button',{class:'btn quiet small', id:'pauseBtn', text:a.pausedAt ? 'Resume' : 'Pause', onclick:() => { if (a.pausedAt){ a.pausedTotal += Date.now() - a.pausedAt; a.pausedAt = 0; } else a.pausedAt = Date.now(); $('#pauseBtn').textContent = a.pausedAt ? 'Resume' : 'Pause'; tick(); }}),
     hasNext && submittedHere && h('button',{class:'btn small', text:'Next part →', title:'Move on like an interviewer would, even if tests still fail', onclick:() => advanceGate(q)}),
     h('button',{class:'btn quiet small', text:'Finish', onclick:() => finishAttempt(q)}));
+  const chatN = (a.chats[gate.id] || []).filter(m => m.role === 'you').length;
   const tabs = h('div',{class:'ptabs'},
     h('button',{class:'ptab', 'aria-current':a.tab === 'question' ? 'true' : null, text:'Question', onclick:() => { a.tab = 'question'; render(); }}),
+    h('button',{class:'ptab', 'aria-current':a.tab === 'ask' ? 'true' : null, onclick:() => { a.tab = 'ask'; render(); }}, 'Ask the interviewer', chatN ? h('span',{class:'count', text:String(chatN)}) : null),
     h('button',{class:'ptab', 'aria-current':a.tab === 'feedback' ? 'true' : null, onclick:() => { a.tab = 'feedback'; render(); }}, 'Feedback', Object.keys(a.subs).length ? h('span',{class:'count', text:String(Object.keys(a.subs).length)}) : null));
   const left = h('aside',{class:'padleft'}, tabs, h('div',{class:'padscroll', id:'padleft'}));
   const edHost = h('div',{class:'editor pad-ed'});
@@ -532,15 +545,32 @@ function renderPadLeft(q){
   if (a.tab === 'question'){
     put(host, h('h3',{text:`Part ${a.gi+1} of ${q.gates.length}: ${gate.title}`}), a.gi > 0 && h('p',{class:'hist', text:'Follow-up. Build on your current code; earlier parts should keep working.'}), promptEl(gate.prompt));
     if (a.gi < q.gates.length - 1) host.append(h('p',{class:'hist', text:`${q.gates.length - a.gi - 1} more part${q.gates.length - a.gi - 1 === 1 ? '' : 's'} follow; each is revealed when you submit the one before it.`}));
-    host.append(h('p',{class:'hist', text:gate.entry ? `Define ${gate.entry}(...) at top level; hidden tests call it when you submit. Write your own tests under if __name__ == "__main__": and Run executes them.` : 'No entry function set on this part.'}));
+    host.append(h('p',{class:'hist', text:gate.entry ? `Define ${gate.entry}(...) at top level; hidden tests call it when you submit. Your own tests go under if __name__ == "__main__": and Run executes them.` : 'No entry function set on this part.'}), gate.spec && h('p',{class:'hist', text:'Details are deliberately left out. Use “Ask the interviewer” for anything unclear; your questions count toward the grade.'}));
     if (a.gi > 0) host.append(h('details',{class:'earlier'}, h('summary',{text:'Earlier parts'}), q.gates.slice(0, a.gi).map((g,i) => h('div',null, h('h4',{text:`Part ${i+1}: ${g.title}`}), promptEl(g.prompt, 'prompt small')))));
     if (q.overview) host.append(h('details',{class:'earlier', open:a.gi === 0}, h('summary',{text:'Overview'}), promptEl(q.overview, 'prompt small')));
+  } else if (a.tab === 'ask'){
+    const chat = a.chats[gate.id] = a.chats[gate.id] || [];
+    const log = h('div',{class:'chatlog'});
+    if (!chat.length) log.append(h('p',{class:'hist', text:'The prompt leaves things unstated on purpose. Ask the way you would in the room: input sizes, empty input, ties, what to return when something is missing, whether you may assume something. What you ask is part of the grade.'}));
+    for (const m of chat) log.append(h('div',{class:'msg ' + m.role}, h('span',{class:'who', text:m.role === 'you' ? 'You' : 'Interviewer'}), h('span',{class:'txt', text:m.text})));
+    if (a.asking) log.append(h('div',{class:'msg interviewer'}, h('span',{class:'who', text:'Interviewer'}), h('span',{class:'txt thinking-txt', text:'…'})));
+    const box = h('textarea',{rows:'2', placeholder:'Ask a question…', onkeydown:e => { if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); send(); } }});
+    const send = async () => {
+      const text = box.value.trim(); if (!text || a.asking) return;
+      if (!(S.health && S.health.hasKey)){ toast('The interviewer chat needs Claude on the server: see Settings.'); return; }
+      chat.push({role:'you', text, at:Date.now()}); box.value = ''; a.asking = true; renderPadLeft(q);
+      try { const r = await API.call('POST', '/api/interview/ask', {questionId:q.id, gateId:gate.id, history:chat.map(m => ({role:m.role, text:m.text})), code:curEditor ? curEditor.get() : a.code}); chat.push({role:'interviewer', text:r.answer || '(no answer)', at:Date.now()}); }
+      catch(err){ chat.push({role:'interviewer', text:'(The interviewer could not answer: ' + err.message + ')', at:Date.now()}); }
+      a.asking = false; if (S.attempt === a && a.tab === 'ask') renderPadLeft(q);
+    };
+    host.append(log, h('div',{class:'row'}, box, h('button',{class:'btn primary small', text:'Ask', onclick:send})));
+    log.scrollTop = log.scrollHeight;
   } else {
     const ids = q.gates.map(g => g.id).filter(id => a.subs[id]);
     if (!ids.length) host.append(h('p',{class:'none', text:'Submit a part and its review shows here.'}));
     for (const id of ids.reverse()){
       const sub = a.subs[id], gi = q.gates.findIndex(g => g.id === id);
-      host.append(h('h3',{text:`Part ${gi+1}: ${q.gates[gi].title}`}), h('p',{class:'hist', text:`${fmtSec(sub.gateSec)}, ${sub.browser && sub.browser.total ? sub.browser.passed + '/' + sub.browser.total + ' tests' : 'not run'}`}));
+      host.append(h('h3',{text:`Part ${gi+1}: ${q.gates[gi].title}`}), h('p',{class:'hist', text:`${fmtSec(sub.gateSec)}, ${sub.browser && sub.browser.total ? sub.browser.passed + '/' + sub.browser.total + ' tests' : 'not run'}, ${(sub.chat || []).filter(m => m.role === 'you').length} question(s) asked`}));
       if (sub.feedback) host.append(renderReview(sub.feedback));
       else if (sub.reviewError) host.append(h('p',{class:'fail', text:'Review failed: ' + sub.reviewError}));
       else if (sub.pending) host.append(h('div',{class:'thinking'}, h('span',{class:'dot'}), sub.pending));
@@ -596,6 +626,7 @@ async function submitCurrent(q){
   const nowMs = (a.pausedAt || Date.now()) - a.pausedTotal;
   const sub = {id:tsId() + '-' + gate.id, questionId:q.id, gateId:gate.id, attemptId:a.id, at:new Date().toISOString(), lang:q.lang, code:a.code, lines:a.code.split('\n').length,
     elapsedSec:Math.round((nowMs - a.startedAt)/1000), gateSec:Math.round((a.gateAcc[a.gi] || 0) + (nowMs - a.gateStartedAt)/1000),
+    chat:(a.chats[gate.id] || []).map(m => ({role:m.role, text:m.text})), resumedFrom:a.resumedFrom || undefined,
     browser:r ? {passed:r.passed, total:r.total, runtime:r.runtime, error:r.error || '', cases:r.cases.map(c => ({raw:c.raw, pass:c.pass, got:c.got, err:c.err}))} : null};
   a.subs[gate.id] = sub;
   const saved = await saveSubmission(sub);
@@ -636,8 +667,8 @@ async function renderEdit(qid){
   let q = qid ? await fetchQuestion(qid) : null;
   if (S.view !== 'edit') return;
   const isNew = !q;
-  const draftInfo = isNew ? S.draftInfo : null; S.draftInfo = null;
-  if (isNew && S.draftQ){ q = S.draftQ; S.draftQ = null; } else q = q ? clone(q) : {id:'', title:'', topic:'', difficulty:'medium', lang:'python', source:'', url:'', overview:'', gates:[{id:'g1', title:'Part 1', entry:'', minutes:15, prompt:'', tests:''}], createdAt:new Date().toISOString()};
+  const draftInfo = (isNew || S.draftFor === qid) ? S.draftInfo : null; S.draftInfo = null;
+  if (S.draftQ && (isNew || S.draftFor === qid)){ q = S.draftQ; S.draftQ = null; S.draftFor = null; } else q = q ? clone(q) : {id:'', title:'', topic:'', difficulty:'medium', lang:'python', source:'', url:'', overview:'', gates:[{id:'g1', title:'Part 1', entry:'', minutes:15, prompt:'', tests:''}], createdAt:new Date().toISOString()};
   const opt = (v,t,cur) => h('option',{value:v, text:t, selected:v===cur});
   const gatesHost = h('div',{class:'col'});
   const drawGates = () => {
@@ -648,7 +679,8 @@ async function renderEdit(qid){
         h('label',{class:'field'}, h('span',{text:'Entry function'}), h('input',{type:'text', value:g.entry, placeholder:'solve', oninput:e => { g.entry = e.target.value.trim(); }})),
         h('label',{class:'field'}, h('span',{text:'Minutes'}), h('input',{type:'number', min:'1', value:g.minutes, oninput:e => { g.minutes = Number(e.target.value) || 0; }})),
         h('div',{class:'row'}, i > 0 && h('button',{class:'btn quiet small', text:'Up', onclick:() => { [q.gates[i-1], q.gates[i]] = [q.gates[i], q.gates[i-1]]; drawGates(); }}), q.gates.length > 1 && h('button',{class:'btn quiet small', text:'Remove', onclick:() => { q.gates.splice(i,1); drawGates(); }}))),
-      h('label',{class:'field'}, h('span',{text:'Prompt for this part'}), h('textarea',{rows:'6', value:g.prompt, placeholder:'What changes or is added in this part, and what the function must return.', oninput:e => { g.prompt = e.target.value; }})),
+      h('label',{class:'field'}, h('span',{text:'Prompt, as the interviewer would say it'}), h('textarea',{rows:'5', value:g.prompt, placeholder:'Brief and conversational; leave the fine rules for the candidate to ask about.', oninput:e => { g.prompt = e.target.value; }})),
+      h('label',{class:'field'}, h('span',{text:'Interviewer spec (hidden; the answer key for clarifying questions and the rules the tests follow)'}), h('textarea',{rows:'4', value:g.spec || '', placeholder:'Input format and ranges; what to return for empty input; tie-breaks; ordering…', oninput:e => { g.spec = e.target.value; }})),
       h('label',{class:'field'}, h('span',{text:'Test cases, one per line: JSON args => expected'}), h('textarea',{class:'mono', rows:'4', spellcheck:'false', value:g.tests, placeholder:'[[2,7,11,15], 9] => [0,1]', oninput:e => { g.tests = e.target.value; }})))));
     gatesHost.append(h('button',{class:'btn small', style:'align-self:flex-start', text:'Add a part', onclick:() => { q.gates.push({id:'g' + (q.gates.length+1), title:`Part ${q.gates.length+1}`, entry:'', minutes:10, prompt:'', tests:''}); drawGates(); }}));
   };
@@ -672,9 +704,19 @@ async function renderEdit(qid){
       }})),
     !(S.health && S.health.hasKey) && h('p',{class:'hist', text:'Drafting needs Claude on the server: see Settings.'}),
     draftOut);
+  const reviseBox = !isNew && S.health && S.health.hasKey && h('details',{class:'draftbox', open:false},
+    h('summary',null, h('strong',{text:'Ask Claude to change this question'})),
+    h('p',{class:'hist', text:'Say what to change in plain words: “make part 3 about weighted edges”, “add a test for an empty graph”, “tighten the budgets to 45 minutes total”. Claude revises the parts, spec, tests and reference solution together, re-verifies, and fills the form below for you to check and save.'}),
+    h('div',{class:'row'}, h('input',{type:'text', id:'reviseText', placeholder:'What should change?', style:'flex:1;min-width:260px', onkeydown:e => { if (e.key === 'Enter') $('#reviseBtn').click(); }}),
+      h('button',{class:'btn primary', id:'reviseBtn', text:'Revise with Claude', onclick:async e => {
+        const instruction = $('#reviseText').value.trim(); if (instruction.length < 5){ toast('Say what to change.'); return; }
+        e.target.disabled = true; e.target.textContent = 'Revising (1–3 min)…';
+        try { const d = await API.call('POST', '/api/questions/' + encodeURIComponent(q.id) + '/revise', {instruction}); Object.assign(q, d.question); q.solution = d.solution; S.draftQ = q; S.draftInfo = d; S.draftFor = q.id; render(); toast('Revised. Check the parts below, then save.'); }
+        catch(err){ toast(err.message); e.target.disabled = false; e.target.textContent = 'Revise with Claude'; }
+      }})));
   const form = h('div',{class:'form'},
     h('h2',{text:isNew ? 'Add a question' : 'Edit question'}),
-    draftBox,
+    draftBox, reviseBox,
     draftInfo && renderDraftReport(draftInfo),
     h('label',{class:'field'}, h('span',{text:'Title'}), h('input',{type:'text', id:'qTitle', value:q.title, oninput:e => { q.title = e.target.value; }})),
     h('div',{class:'meta'},
@@ -697,110 +739,198 @@ async function renderEdit(qid){
   app.append(form);
 }
 
+/* ---------- charts (inline SVG) ---------- */
+const CAT = ['#2a78d6','#eb6834','#1baf7a','#eda100','#e87ba4','#4a3aa7','#008300','#e34948'];
+const svg = (tag, attrs) => { const el = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const [k,v] of Object.entries(attrs || {})) el.setAttribute(k, v); return el; };
+function lineChart(points, {w=420, h=150, min=0, max=5, fmt=v => v.toFixed(1), label=''} = {}){
+  // points: [{x:label, y:number, tip}]
+  const pad = {l:40, r:12, t:10, b:22}, iw = w - pad.l - pad.r, ih = h - pad.t - pad.b;
+  const root = svg('svg', {viewBox:`0 0 ${w} ${h}`, class:'chart', role:'img', 'aria-label':label});
+  const X = i => pad.l + (points.length > 1 ? i/(points.length-1) : .5) * iw, Y = v => pad.t + (1 - (v-min)/(max-min)) * ih;
+  for (const g of [min, (min+max)/2, max]){ root.append(svg('line', {x1:pad.l, x2:w-pad.r, y1:Y(g), y2:Y(g), class:'grid'})); const tx = svg('text', {x:pad.l-6, y:Y(g)+4, class:'tick', 'text-anchor':'end'}); tx.textContent = fmt(g); root.append(tx); }
+  if (points.length > 1){ root.append(svg('path', {d:points.map((p,i) => (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(p.y).toFixed(1)).join(' '), class:'series'})); }
+  points.forEach((p,i) => { const c = svg('circle', {cx:X(i), cy:Y(p.y), r:4, class:'dot-pt'}); const tt = svg('title'); tt.textContent = p.tip || `${p.x}: ${fmt(p.y)}`; c.append(tt); root.append(c); });
+  const step = Math.max(1, Math.ceil(points.length/6));
+  points.forEach((p,i) => { if (i % step === 0 || i === points.length-1){ const tx = svg('text', {x:X(i), y:h-6, class:'tick', 'text-anchor':'middle'}); tx.textContent = p.x; root.append(tx); } });
+  return root;
+}
+function barChart(items, {w=640, h=190, max=5, fmt=v => v.toFixed(1), label='', colorOf} = {}){
+  // items: [{name, v, tip, delta}]
+  const pad = {l:8, r:8, t:18, b:40}, iw = w - pad.l - pad.r, ih = h - pad.t - pad.b, bw = iw / items.length;
+  const root = svg('svg', {viewBox:`0 0 ${w} ${h}`, class:'chart', role:'img', 'aria-label':label});
+  items.forEach((it, i) => {
+    const x = pad.l + i*bw + bw*0.18, width = bw*0.64, y = pad.t + (1 - it.v/max) * ih, hh = (it.v/max) * ih;
+    const r = svg('rect', {x, y, width, height:Math.max(2, hh), rx:3, fill:colorOf ? colorOf(it) : 'var(--pen)'}); const tt = svg('title'); tt.textContent = it.tip || `${it.name}: ${fmt(it.v)}`; r.append(tt); root.append(r);
+    const v = svg('text', {x:x+width/2, y:y-4, class:'val-txt', 'text-anchor':'middle'}); v.textContent = fmt(it.v) + (it.delta != null && Math.abs(it.delta) >= .05 ? (it.delta > 0 ? ' ▲' : ' ▼') : ''); root.append(v);
+    const n = svg('text', {x:x+width/2, y:h-24, class:'tick', 'text-anchor':'middle'}); n.textContent = it.name.length > 12 ? it.name.slice(0,11) + '…' : it.name; root.append(n);
+    if (it.sub){ const s = svg('text', {x:x+width/2, y:h-10, class:'tick', 'text-anchor':'middle'}); s.textContent = it.sub; root.append(s); }
+  });
+  return root;
+}
+function donut(segs, {size=170, label=''} = {}){
+  // segs: [{name, v, color}]
+  const total = segs.reduce((s,x) => s + x.v, 0) || 1, r = size/2 - 6, R = size/2, inner = r*0.58;
+  const root = svg('svg', {viewBox:`0 0 ${size} ${size}`, class:'chart donut', role:'img', 'aria-label':label});
+  let a0 = -Math.PI/2;
+  for (const s of segs){ if (!s.v) continue; const a1 = a0 + s.v/total * 2*Math.PI, big = a1 - a0 > Math.PI ? 1 : 0;
+    const p = (ang, rad) => `${(R + rad*Math.cos(ang)).toFixed(2)} ${(R + rad*Math.sin(ang)).toFixed(2)}`;
+    const d = `M ${p(a0, r)} A ${r} ${r} 0 ${big} 1 ${p(a1, r)} L ${p(a1, inner)} A ${inner} ${inner} 0 ${big} 0 ${p(a0, inner)} Z`;
+    const path = svg('path', {d, fill:s.color, stroke:'var(--surface)', 'stroke-width':2}); const tt = svg('title'); tt.textContent = `${s.name}: ${s.v} (${Math.round(s.v/total*100)}%)`; path.append(tt); root.append(path);
+    if (s.v/total >= .08){ const mid = (a0+a1)/2, lx = R + (r+inner)/2*Math.cos(mid), ly = R + (r+inner)/2*Math.sin(mid); const tx = svg('text', {x:lx, y:ly+4, class:'donut-lbl', 'text-anchor':'middle'}); tx.textContent = s.short || s.name; root.append(tx); }
+    a0 = a1; }
+  return root;
+}
+function legend(segs){ return h('div',{class:'legend'}, segs.map(s => h('span',null, h('i',{style:`background:${s.color}`}), `${s.name} (${s.v})`))); }
+
 /* ---------- analytics ---------- */
+const DIM_SKILL = {clarifying:'clarifying', approach:'algo-choice', correctness:'correctness', efficiency:'complexity', edgeCases:'edge-cases', testing:'testing', clarity:'clarity', extensibility:'extensibility'};
 function bar(frac, cls, marker){
   const b = h('div',{class:'bar'}, h('i',{class:cls || '', style:`width:${Math.max(0, Math.min(100, frac*100)).toFixed(1)}%`}));
   if (marker != null) b.append(h('s',{style:`left:${Math.max(0, Math.min(100, marker*100)).toFixed(1)}%`, title:'budget'}));
   return b;
 }
+function drillBtn(focus, label){
+  return h('button',{class:'btn small', text:label || 'Drill this', title:'Claude writes three short exercises on this and puts them under Drills', onclick:() => { S.drillFocus = focus; location.hash = '#/drills'; }});
+}
 function renderAnalytics(qidFilter){
   const qs = [...S.questions.values()].filter(q => !qidFilter || q.id === qidFilter);
   const q0 = qidFilter && S.questions.get(qidFilter);
-  app.append(h('div',{class:'page-head'}, h('div',null, h('h2',{text:q0 ? 'Analytics: ' + q0.title : 'Analytics'}), h('p',{text:'Gates reached, time spent against budget, and what the feedback keeps flagging. Latest attempt per question unless stated.'})),
+  app.append(h('div',{class:'page-head'}, h('div',null, h('h2',{text:q0 ? 'Analytics: ' + q0.title : 'Analytics'}), h('p',{text:'What to fix next, and whether it is moving. Built from every submission and review; drills count too.'})),
     q0 && h('a',{class:'btn small', href:'#/analytics', text:'All questions'})));
-  const rows = []; // one per question: latest attempt
-  const allAtts = [];
+  const rows = [], allAtts = [];
   for (const q of qs){ const atts = attemptsOf(q.id); allAtts.push(...atts.map(a => ({...a, q}))); if (atts.length) rows.push({q, a:atts[atts.length-1], atts}); }
   const subs = S.subs.filter(s => !qidFilter || s.questionId === qidFilter);
-  const fbs = subs.map(s => s.feedback).filter(Boolean);
+  const fbs = subs.filter(s => s.feedback).map(s => ({...s.feedback, at:s.at, sub:s}));
   if (!subs.length){ app.append(h('p',{class:'none', text:'Nothing to show yet. Submit a part of a question and the numbers appear here.'})); return; }
+  allAtts.sort((x,y) => x.at.localeCompare(y.at));
+  const fullAtts = allAtts.filter(a => a.q.kind !== 'drill');
+
+  // ---- headline tiles
+  const recent = fbs.slice(-5), earlier = fbs.slice(0, -5);
+  const dimAvg = list => Object.fromEntries(DIMS.map(([k]) => [k, avg(list.map(f => f.scores[k] || f.overall))]));
+  const dNow = dimAvg(fbs), dRecent = dimAvg(recent), dEarlier = earlier.length ? dimAvg(earlier) : null;
   const gatesTotal = rows.reduce((s,r) => s + r.q.gates.length, 0), gatesPassed = rows.reduce((s,r) => s + r.a.passed, 0);
   app.append(h('div',{class:'tiles'},
-    h('div',{class:'tile'}, h('b',{text:String(rows.length)}), h('span',{text:'questions attempted'})),
-    h('div',{class:'tile'}, h('b',{text:String(allAtts.length)}), h('span',{text:'attempts'})),
+    h('div',{class:'tile'}, h('b',{text:fbs.length ? avg(recent.map(f => f.overall)).toFixed(1) : '–'}), h('span',{text:fbs.length ? `quality, last ${recent.length} review${recent.length===1?'':'s'}` + (earlier.length ? ` (was ${avg(earlier.map(f => f.overall)).toFixed(1)})` : '') : 'no reviews yet'})),
     h('div',{class:'tile'}, h('b',{text:gatesTotal ? Math.round(gatesPassed/gatesTotal*100) + '%' : '–'}), h('span',{text:'parts passed, latest attempts'})),
-    h('div',{class:'tile'}, h('b',{text:fbs.length ? avg(fbs.map(f => f.overall)).toFixed(1) : '–'}), h('span',{text:fbs.length ? `code quality, ${fbs.length} reviews` : 'no reviews yet'})),
-    h('div',{class:'tile'}, h('b',{text:fmtSec(avg(allAtts.map(a => a.totalSec)))}), h('span',{text:'average attempt length'}))));
-  const grid = h('div',{class:'ins'});
+    h('div',{class:'tile'}, h('b',{text:String(fullAtts.length)}), h('span',{text:`full attempt${fullAtts.length===1?'':'s'}, ${allAtts.length - fullAtts.length} drill${allAtts.length - fullAtts.length===1?'':'s'}`})),
+    h('div',{class:'tile'}, h('b',{text:fmtSec(avg(fullAtts.map(a => a.totalSec)))}), h('span',{text:'average full attempt'}))));
 
-  // Interview readiness: the usual bar is three clean parts inside the budget
-  const ready = h('section',{class:'wide'}, h('h3',{text:'Interview readiness'}), h('p',{class:'sub', text:'Interviewers usually pass a candidate who clears the first three parts cleanly and in time. Every attempt counts here, not only the latest.'}));
-  const K = 3, eligible = allAtts.filter(a => a.q.gates.length >= K);
-  if (!eligible.length) ready.append(h('p',{class:'none', text:'Needs questions with at least three parts.'}));
-  else {
-    const first = a => a.q.gates.slice(0, K).map(g => a.gates.get(g.id));
-    const clean = eligible.filter(a => first(a).every(s => s && gateStatus(s) === 'pass'));
-    const inTime = clean.filter(a => { const gs = a.q.gates.slice(0, K); const budget = gs.reduce((x,g) => x + (g.minutes||0)*60, 0); return !budget || first(a).reduce((x,s) => x + (s.gateSec||0), 0) <= budget; });
-    const strong = inTime.filter(a => { const f = first(a).map(s => s.feedback && s.feedback.overall).filter(Boolean); return f.length === K && avg(f) >= 4; });
-    const line = (label, n, note) => ready.append(h('div',{class:'hbar'}, h('div',null, label, h('span',{class:'n', text:note})), bar(n/eligible.length, n/eligible.length >= .7 ? 'good' : n/eligible.length >= .4 ? 'warn' : 'bad'), h('span',{class:'val', text:`${n} of ${eligible.length}`})));
-    line('Parts 1–3 all tests passing', clean.length, 'correctness bar');
-    line('…and inside the time budget', inTime.length, 'pace bar');
-    line('…with code quality 4+ on each', strong.length, 'what a strong hire looks like');
-    const stall = new Map(); for (const a of eligible) for (let i = 0; i < K; i++){ const s = a.gates.get(a.q.gates[i].id); if (!s || gateStatus(s) !== 'pass'){ stall.set(i, (stall.get(i)||0) + 1); break; } }
-    if (stall.size) ready.append(h('p',{class:'sub', style:'margin-top:8px', text:'Where the first three parts break down: ' + [...stall.entries()].sort((x,y) => y[1]-x[1]).map(([i,n]) => `part ${i+1} (${n})`).join(', ') + '.'}));
+  // ---- fix next
+  const fixes = [];
+  if (fbs.length){
+    const worst = DIMS.map(([k,label]) => ({k, label, v:dRecent[k]})).sort((x,y) => x.v-y.v)[0];
+    if (worst.v < 4) fixes.push({title:`${worst.label}: ${worst.v.toFixed(1)} of 5 lately`, why:{clarifying:'You are coding on assumptions. Ask two or three questions on the Ask the interviewer tab before writing code; it is graded.', approach:'The algorithm or data model is not the right fit often enough. Say the approach out loud (in the chat) before coding and sanity-check its complexity.', correctness:'Logic bugs are slipping through. Walk one example through the code by hand before submitting.', efficiency:'A faster approach existed. Before coding, name the complexity you are aiming for and whether the input size allows it.', edgeCases:'Empty, single and degenerate inputs are missed. Write those three tests first, every time.', testing:'Your own tests are thin. A main block with four asserts (normal, empty, single, tricky) is the habit to build.', clarity:'Reviewers find the code hard to follow. Name helpers after what they return; keep one idea per function.', extensibility:'Part N+1 forces rewrites. Keep per-entity state in one structure so a new rule is one more field.'}[worst.k], focus:DIM_SKILL[worst.k], kind:'dim'});
   }
-  grid.append(ready);
+  const gapCount = new Map();
+  for (const f of fbs) for (const g of f.gaps || []) gapCount.set(g, (gapCount.get(g)||0) + 1);
+  const topGap = [...gapCount.entries()].sort((x,y) => y[1]-x[1])[0];
+  if (topGap && topGap[1] >= 2 && !fixes.some(f => f.focus === topGap[0])) fixes.push({title:`${SKILLS[topGap[0]][0]} flagged in ${topGap[1]} of ${fbs.length} reviews`, why:SKILLS[topGap[0]][1] + '.', focus:topGap[0], kind:'gap'});
+  const over = [];
+  for (const {q, a} of rows) q.gates.forEach((g,i) => { const s = a.gates.get(g.id); if (s && g.minutes && s.gateSec > g.minutes*60*1.15) over.push({q, g, i, ratio:s.gateSec/(g.minutes*60)}); });
+  over.sort((x,y) => y.ratio-x.ratio);
+  if (over[0]) fixes.push({title:`${Math.round(over[0].ratio*100)}% of budget on “${over[0].q.title}”, part ${over[0].i+1}`, why:'Pace is the other half of passing. Redo this part from your last code with the clock running and aim to finish inside the budget.', link:{href:'#/q/' + over[0].q.id, text:'Open the question'}, kind:'time'});
+  const stall = new Map();
+  for (const a of fullAtts){ const K = a.q.gates.length; let end = 0; for (let i = 0; i < K; i++){ const s = a.gates.get(a.q.gates[i].id); if (s && gateStatus(s) === 'pass') end = i+1; else break; } stall.set(end, (stall.get(end)||0) + 1); }
+  const stallTop = [...stall.entries()].filter(([k]) => k < 5).sort((x,y) => y[1]-x[1])[0];
+  if (stallTop && fullAtts.length >= 2 && stallTop[0] <= 2) fixes.push({title:`${stallTop[1]} of ${fullAtts.length} full attempts end before part ${stallTop[0]+1}`, why:'Interviewers pass three clean parts. Drill the kind of problem you meet in part ' + (stallTop[0]+1) + ' until it is routine, then run full rounds again.', focus:'algo-choice', kind:'stall'});
+  const fx = h('section',{class:'wide'}, h('h3',{text:'Fix next'}));
+  if (!fixes.length) fx.append(h('p',{class:'none', text:'Nothing stands out yet. Keep going; this fills in after a few reviews.'}));
+  fx.append(h('div',{class:'fixes'}, fixes.slice(0,3).map((f,i) => h('div',{class:'fix'}, h('div',{class:'fix-n', text:String(i+1)}), h('div',null, h('strong',{text:f.title}), h('p',{text:f.why}), h('div',{class:'row', style:'margin-top:8px'}, f.focus && S.health && S.health.hasKey && drillBtn(f.focus, 'Make 3 drills for this'), f.link && h('a',{class:'btn small', href:f.link.href, text:f.link.text})))))));
+  app.append(fx);
 
-  // Per-question gate funnel: time per part vs budget
-  const fun = h('section',{class:'wide'}, h('h3',{text:'Time per part against budget'}), h('p',{class:'sub', text:'Latest attempt. Bar is time spent; the tick is the part budget. Red: tests failed; amber: partial; green: passed.'}));
-  for (const {q, a} of rows){
+  const grid = h('div',{class:'ins'});
+  // ---- trend: quality over reviews
+  const tsec = h('section',null, h('h3',{text:'Is it improving?'}), h('p',{class:'sub', text:'Average review score per attempt, in order. Hover a point for the question.'}));
+  const perAtt = allAtts.filter(a => a.quality != null).map(a => ({x:fmtDate(a.at), y:a.quality, tip:`${a.q.title}: ${a.quality.toFixed(1)} of 5, ${a.passed}/${a.q.gates.length} parts, ${fmtSec(a.totalSec)}`}));
+  tsec.append(perAtt.length >= 2 ? lineChart(perAtt, {label:'Quality per attempt'}) : h('p',{class:'none', text:'Needs two attempts with reviews.'}));
+  const passPts = fullAtts.map(a => ({x:fmtDate(a.at), y:a.passed/a.q.gates.length*100, tip:`${a.q.title}: ${a.passed}/${a.q.gates.length} parts`}));
+  if (passPts.length >= 2){ tsec.append(h('p',{class:'sub', style:'margin-top:10px', text:'Share of parts passed per full attempt.'}), lineChart(passPts, {max:100, fmt:v => Math.round(v) + '%', label:'Parts passed per attempt'})); }
+  grid.append(tsec);
+
+  // ---- dimensions bar chart
+  const dsec = h('section',null, h('h3',{text:'Where the points go'}), h('p',{class:'sub', text:fbs.length ? `Average per dimension over the last ${recent.length} review${recent.length===1?'':'s'}; ▲▼ against the reviews before them.` : 'Appears once submissions have been reviewed.'}));
+  if (fbs.length) dsec.append(barChart(DIMS.map(([k,label]) => ({name:label, v:dRecent[k], delta:dEarlier ? dRecent[k]-dEarlier[k] : null, tip:`${label}: ${dRecent[k].toFixed(1)}${dEarlier ? ' (earlier ' + dEarlier[k].toFixed(1) + ')' : ''}`})), {label:'Review dimensions', colorOf:it => it.v < 2.5 ? 'var(--bad)' : it.v < 3.5 ? 'var(--warn)' : 'var(--good)'}));
+  grid.append(dsec);
+
+  // ---- stall donut
+  if (fullAtts.length){
+    const K = Math.max(...fullAtts.map(a => a.q.gates.length));
+    const segs = []; for (let i = 0; i <= K; i++){ const n = stall.get(i) || 0; if (n) segs.push({name:i === 0 ? 'Stuck on part 1' : i >= K ? 'Finished all' : `Stopped after part ${i}`, short:i === 0 ? 'P1' : i >= K ? 'All' : `P${i}`, v:n, color:i >= K ? CAT[2] : CAT[[1,3,0,4,5,7][i] % CAT.length]}); }
+    const ssec = h('section',null, h('h3',{text:'Where full attempts end'}), h('p',{class:'sub', text:'Last part passed cleanly before the attempt stopped. The pass bar is three.'}), h('div',{class:'row'}, donut(segs, {label:'Where attempts end'}), legend(segs)));
+    grid.append(ssec);
+  }
+
+  // ---- time vs budget
+  const fun = h('section',null, h('h3',{text:'Pace against budget'}), h('p',{class:'sub', text:'Latest attempt per question. Bar is time spent; tick is the budget. Colour: tests passed, partial, failed.'}));
+  for (const {q, a} of rows.filter(r => r.q.kind !== 'drill').slice(0, 8)){
     fun.append(h('h4',{style:'margin-top:8px'}, h('a',{href:'#/q/' + q.id, text:q.title, style:'color:inherit;text-decoration:none'})));
     const maxSec = Math.max(...q.gates.map(g => (g.minutes||0)*60), ...[...a.gates.values()].map(s => s.gateSec||0), 60);
     q.gates.forEach((g,i) => { const s = a.gates.get(g.id); const st = gateStatus(s);
-      fun.append(h('div',{class:'hbar'}, h('div',null, `${i+1}. ${g.title}`, h('span',{class:'n', text:s ? (s.total ? `${s.passed}/${s.total} tests` : 'not run') : 'not reached'})),
-        bar(s ? (s.gateSec||0)/maxSec : 0, st === 'pass' ? 'good' : st === 'part' ? 'warn' : st === 'fail' ? 'bad' : '', g.minutes ? g.minutes*60/maxSec : null),
-        h('span',{class:'val', text:s ? fmtSec(s.gateSec) : '–'}))); });
+      fun.append(h('div',{class:'hbar'}, h('div',null, `${i+1}. ${g.title}`, h('span',{class:'n', text:s ? (s.total ? `${s.passed}/${s.total} tests` : 'not run') : 'not reached'})), bar(s ? (s.gateSec||0)/maxSec : 0, st === 'pass' ? 'good' : st === 'part' ? 'warn' : st === 'fail' ? 'bad' : '', g.minutes ? g.minutes*60/maxSec : null), h('span',{class:'val', text:s ? fmtSec(s.gateSec) : '–'}))); });
   }
+  if (!rows.some(r => r.q.kind !== 'drill')) fun.append(h('p',{class:'none', text:'No full attempts yet.'}));
   grid.append(fun);
 
-  // Across questions: pass rate and time ratio by part position
-  if (!qidFilter && rows.length > 1){
-    const byPos = new Map();
-    for (const {q, a} of rows) q.gates.forEach((g,i) => { const s = a.gates.get(g.id); let p = byPos.get(i); if (!p){ p = {n:0, reached:0, passed:0, ratios:[]}; byPos.set(i, p); } p.n++; if (s){ p.reached++; if (gateStatus(s) === 'pass') p.passed++; if (g.minutes) p.ratios.push((s.gateSec||0)/(g.minutes*60)); } });
-    const sec = h('section',null, h('h3',{text:'Where attempts stall'}), h('p',{class:'sub', text:'By part position, across questions: how often each part is reached and passed, and time taken as a share of its budget.'}));
-    for (const [i,p] of [...byPos.entries()].sort((x,y) => x[0]-y[0])){
-      sec.append(h('div',{class:'hbar'}, h('div',null, `Part ${i+1}`, h('span',{class:'n', text:`reached ${p.reached}/${p.n}, passed ${p.passed}/${p.n}`})), bar(p.n ? p.passed/p.n : 0, 'good'), h('span',{class:'val', text:p.n ? Math.round(p.passed/p.n*100) + '%' : '–'})));
-      if (p.ratios.length) sec.append(h('div',{class:'hbar'}, h('div',null, h('span',{class:'n', text:'time vs budget'})), bar(Math.min(avg(p.ratios), 2)/2, avg(p.ratios) > 1 ? 'bad' : 'warn', 0.5), h('span',{class:'val', text:Math.round(avg(p.ratios)*100) + '%'})));
-    }
-    grid.append(sec);
-  }
-
-  // Code quality dimensions
-  const dsec = h('section',null, h('h3',{text:'Code quality'}), h('p',{class:'sub', text:fbs.length ? `Average of ${fbs.length} reviews, lowest first.` : 'Appears once submissions have been reviewed.'}));
-  if (fbs.length){
-    const dims = DIMS.map(([k,label]) => ({label, v:avg(fbs.map(f => f.scores[k] || f.overall))})).sort((a,b) => a.v-b.v);
-    for (const d of dims) dsec.append(h('div',{class:'hbar'}, h('div',null, d.v < 3 ? h('span',{class:'mark', text:d.label}) : h('span',{style:'font-weight:600', text:d.label})), bar((d.v-1)/4, d.v < 2.5 ? 'bad' : d.v < 3.5 ? 'warn' : 'good'), h('span',{class:'val', text:d.v.toFixed(1)})));
-    const byTopic = new Map();
-    for (const s of subs) if (s.feedback){ const q = S.questions.get(s.questionId); const t = (q && q.topic) || 'No topic'; if (!byTopic.has(t)) byTopic.set(t, []); byTopic.get(t).push(s.feedback.overall); }
-    if (byTopic.size > 1){ dsec.append(h('p',{class:'sub', style:'margin-top:10px', text:'By topic'})); for (const [t,xs] of [...byTopic.entries()].sort((a,b) => avg(a[1])-avg(b[1]))) dsec.append(h('div',{class:'hbar'}, h('div',null, t, h('span',{class:'n', text:`${xs.length} review${xs.length===1?'':'s'}`})), bar((avg(xs)-1)/4, avg(xs) < 2.5 ? 'bad' : avg(xs) < 3.5 ? 'warn' : 'good'), h('span',{class:'val', text:avg(xs).toFixed(1)}))); }
-  }
-  grid.append(dsec);
-
-  // Recurring gaps
-  const gsec = h('section',null, h('h3',{text:'Gaps that keep coming up'}));
+  // ---- gaps
+  const gsec = h('section',null, h('h3',{text:'Gaps that keep coming up'}), h('p',{class:'sub', text:'How many reviews flagged each skill. Each has a drill button.'}));
   const gaps = new Map();
   for (const s of subs) if (s.feedback) for (const g of s.feedback.gaps || []){ let x = gaps.get(g); if (!x){ x = {skill:g, count:0, items:[]}; gaps.set(g, x); } x.count++; const q = S.questions.get(s.questionId); const gate = q && q.gates.find(z => z.id === s.gateId); const note = (s.feedback.issues || []).find(i => i.skill === g); x.items.push({q, gate, s, note:note ? note.note : s.feedback.summary}); }
   if (!gaps.size) gsec.append(h('p',{class:'none', text:'No recurring gaps flagged yet.'}));
   for (const g of [...gaps.values()].sort((a,b) => b.count-a.count)) gsec.append(h('details',{class:'gap'},
     h('summary',null, h('span',null, h('strong',{text:SKILLS[g.skill][0]}), h('span',{class:'desc', text:SKILLS[g.skill][1]})), bar(g.count/fbs.length, 'warn'), h('span',{class:'val', text:`${g.count} of ${fbs.length}`})),
-    h('div',{class:'gap-items'}, g.items.map(it => h('div',null, h('a',{href:'#/q/' + (it.q ? it.q.id : ''), text:(it.q ? it.q.title : it.s.questionId) + (it.gate ? ', ' + it.gate.title : '')}), h('div',{text:it.note}))))));
+    h('div',{class:'gap-items'}, S.health && S.health.hasKey && drillBtn(g.skill), g.items.slice(-4).map(it => h('div',null, h('a',{href:'#/q/' + (it.q ? it.q.id : ''), text:(it.q ? it.q.title : it.s.questionId) + (it.gate ? ', ' + it.gate.title : '')}), h('div',{text:it.note}))))));
   grid.append(gsec);
 
-  // Progress over attempts
-  const psec = h('section',null, h('h3',{text:'Progress over attempts'}), h('p',{class:'sub', text:'Each bar is one attempt: height is parts passed, hover for time.'}));
-  for (const {q, atts} of rows){ if (atts.length < 2 && !qidFilter) continue;
-    psec.append(h('div',{style:'margin-bottom:12px'}, h('div',{class:'hist', text:q.title}), h('div',{class:'spark'}, atts.map(a => h('i',{class:a.passed ? '' : 'fail', style:`height:${Math.max(8, a.passed/q.gates.length*100)}%`, 'data-t':`${fmtDate(a.at)}: ${a.passed}/${q.gates.length} parts, ${fmtSec(a.totalSec)}`})))));
-  }
-  if (!psec.querySelector('.spark')) psec.append(h('p',{class:'none', text:'Shows once a question has more than one attempt.'}));
-  grid.append(psec);
-
-  // Table for the record
-  const tsec = h('section',{class:'wide'}, h('h3',{text:'All submissions'}));
-  tsec.append(h('table',null, h('thead',null, h('tr',null, h('th',{text:'When'}), h('th',{text:'Question'}), h('th',{text:'Part'}), h('th',{class:'num', text:'Part time'}), h('th',{class:'num', text:'Tests'}), h('th',{class:'num', text:'Quality'}), h('th',{text:'Gaps'}))),
+  // ---- table
+  const tsec2 = h('section',{class:'wide'}, h('h3',{text:'All submissions'}));
+  tsec2.append(h('table',null, h('thead',null, h('tr',null, h('th',{text:'When'}), h('th',{text:'Question'}), h('th',{text:'Part'}), h('th',{class:'num', text:'Part time'}), h('th',{class:'num', text:'Tests'}), h('th',{class:'num', text:'Asked'}), h('th',{class:'num', text:'Quality'}), h('th',{text:'Gaps'}))),
     h('tbody',null, subs.slice().reverse().slice(0,200).map(s => { const q = S.questions.get(s.questionId); const gi = q ? q.gates.findIndex(g => g.id === s.gateId) : -1;
       return h('tr',null, h('td',{text:fmtDateTime(s.at)}), h('td',null, h('a',{href:'#/q/' + s.questionId, text:q ? q.title : s.questionId})), h('td',{text:gi >= 0 ? `${gi+1}. ${q.gates[gi].title}` : s.gateId}),
-        h('td',{class:'num', text:fmtSec(s.gateSec)}), h('td',{class:'num ' + (gateStatus(s) === 'pass' ? 'ok' : 'fail'), text:s.total ? `${s.passed}/${s.total}` : '–'}), h('td',{class:'num', text:s.feedback ? s.feedback.overall + '/5' : '–'}), h('td',{text:s.feedback ? s.feedback.gaps.map(x => (SKILLS[x]||[x])[0]).join(', ') : ''})); }))));
-  grid.append(tsec);
+        h('td',{class:'num', text:fmtSec(s.gateSec)}), h('td',{class:'num ' + (gateStatus(s) === 'pass' ? 'ok' : 'fail'), text:s.total ? `${s.passed}/${s.total}` : '–'}), h('td',{class:'num', text:String(s.questionsAsked || 0)}), h('td',{class:'num', text:s.feedback ? s.feedback.overall + '/5' : '–'}), h('td',{text:s.feedback ? s.feedback.gaps.map(x => (SKILLS[x]||[x])[0]).join(', ') : ''})); }))));
+  grid.append(tsec2);
+  app.append(grid);
+}
+
+/* ---------- drills ---------- */
+function renderDrills(){
+  const drills = [...S.questions.values()].filter(q => q.kind === 'drill').sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
+  const fulls = [...S.questions.values()].filter(q => q.kind !== 'drill');
+  app.append(h('div',{class:'page-head'}, h('div',null, h('h2',{text:'Drills'}), h('p',{text:'Short single-part exercises, 10–15 minutes each, for when you want reps rather than a full round. Claude writes them around a skill or topic, in the style of your own questions, and verifies the tests before saving.'}))));
+  const focusOpts = [...Object.entries(SKILLS).map(([k,[n]]) => ['skill:' + k, n + ' (skill)']), ...[...new Set(fulls.map(q => q.topic).filter(Boolean))].map(t => ['topic:' + t, t + ' (topic)'])];
+  const pre = S.drillFocus ? 'skill:' + S.drillFocus : focusOpts[0] && focusOpts[0][0]; S.drillFocus = null;
+  const out = h('div');
+  const gen = h('details',{class:'draftbox', open:true},
+    h('summary',null, h('strong',{text:'Make new drills'})),
+    h('div',{class:'row', style:'margin-top:8px'},
+      h('label',{class:'field', style:'flex:1;min-width:220px'}, h('span',{text:'Focus'}), h('select',{id:'drFocus'}, focusOpts.map(([v,l]) => h('option',{value:v, text:l, selected:v === pre})), h('option',{value:'custom', text:'Something else…'}))),
+      h('label',{class:'field', style:'width:110px'}, h('span',{text:'How many'}), h('select',{id:'drCount'}, [1,2,3,4,5].map(n => h('option',{value:String(n), text:String(n), selected:n === 3})))),
+      h('label',{class:'field', style:'width:120px'}, h('span',{text:'Minutes each'}), h('input',{type:'number', id:'drMin', value:'12', min:'5', max:'30'}))),
+    h('label',{class:'field', style:'margin-top:8px'}, h('span',{text:'Anything specific (optional)'}), h('input',{type:'text', id:'drHint', placeholder:'e.g. grid simulations with simultaneous updates; or a custom focus if you picked “Something else”'})),
+    h('div',{class:'row', style:'margin-top:8px'}, h('button',{class:'btn primary', id:'drBtn', disabled:!(S.health && S.health.hasKey), text:'Write drills with Claude', onclick:async e => {
+      const sel = $('#drFocus').value, hint = $('#drHint').value.trim();
+      const focus = sel === 'custom' ? (hint || 'general problem solving') : sel.startsWith('skill:') ? SKILLS[sel.slice(6)][0] + ': ' + SKILLS[sel.slice(6)][1] : sel.slice(6);
+      e.target.disabled = true; out.replaceChildren(h('div',{class:'thinking'}, h('span',{class:'dot'}), `Claude is writing ${$('#drCount').value} drill(s) and the server is verifying each one. Two to five minutes.`));
+      try { const r = await API.call('POST', '/api/drills/generate', {focus, count:Number($('#drCount').value), minutes:Number($('#drMin').value), hint, examples:fulls.slice(0,2).map(q => q.id)});
+        await loadIndex(); out.replaceChildren(); toast(`${r.made.length} drill${r.made.length===1?'':'s'} ready` + (r.errors.length ? `, ${r.errors.length} failed` : '') + '.'); render(); }
+      catch(err){ out.replaceChildren(h('p',{class:'fail', text:err.message})); e.target.disabled = false; }
+    }}), !(S.health && S.health.hasKey) && h('span',{class:'hist', text:'Needs Claude on the server: see Settings.'})),
+    out);
+  app.append(gen);
+  if (!drills.length){ app.append(h('p',{class:'none', text:'No drills yet.'})); return; }
+  const grid = h('div',{class:'qgrid', style:'margin-top:18px'});
+  for (const q of drills){
+    const atts = attemptsOf(q.id), last = atts[atts.length-1]; const s = last && last.gates.get(q.gates[0].id);
+    grid.append(h('article',{class:'qcard'},
+      h('h3',null, h('a',{href:'#/q/' + q.id, text:q.title})),
+      h('div',{class:'qmeta'}, h('span',{class:'diff d-' + q.difficulty, text:q.difficulty[0].toUpperCase() + q.difficulty.slice(1)}), q.topic && h('span',{text:q.topic}), q.skills && h('span',{text:q.skills}), h('span',{text:(q.gates[0].minutes || '?') + ' min'})),
+      h('div',{class:'stats'},
+        h('div',{class:'stat'}, h('b',{text:s ? (gateStatus(s) === 'pass' ? 'Passed' : 'Failed') : '–'}), h('span',{text:s ? 'last attempt' : 'not attempted'})),
+        h('div',{class:'stat'}, h('b',{text:s ? fmtSec(s.gateSec) : '–'}), h('span',{text:'time'})),
+        h('div',{class:'stat'}, h('b',{text:s && s.feedback ? s.feedback.overall + '/5' : '–'}), h('span',{text:'quality'}))),
+      h('div',{class:'row'}, h('a',{class:'btn primary small', href:'#/q/' + q.id + '/try', text:atts.length ? 'Again' : 'Start'}), h('a',{class:'btn small', href:'#/q/' + q.id, text:'History'}),
+        h('button',{class:'btn quiet small', text:'Delete', onclick:async () => { if (!confirm('Delete this drill?')) return; await API.deleteQuestion(q.id); await loadIndex(); render(); }}))));
+  }
   app.append(grid);
 }
 

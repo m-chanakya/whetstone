@@ -34,7 +34,11 @@ url: <source link if given, else blank>
 entry: <python function name the tests call>
 minutes: <time budget for this part>
 
-<the full prompt for this part: precise rules, what the function takes and returns, worked example in words. Written so a candidate can implement it without seeing the original text.>
+<the prompt the way an interviewer would SAY it: 2-5 sentences, conversational, states the task and the function name/signature to implement, gives one small example, and deliberately leaves the finer rules unstated (tie-breaking, duplicates, empty input, bounds, ordering of output) so the candidate has to ask. Never a bullet list of rules.>
+
+```spec
+<the interviewer's private answer key: every precise rule the tests rely on, as short declarative lines (input format and ranges, what to return in each edge case, tie-breaks, ordering, assumptions the candidate may make). The candidate never sees this; the interviewer uses it to answer clarifying questions consistently.>
+```
 
 ```tests
 <JSON args> => <JSON expected>
@@ -60,7 +64,7 @@ Rules:
 - Test lines are `JSON args => JSON expected`, args being a JSON array of positional arguments. Make the expected values by reasoning carefully; the reference solution will be executed against them, so they must be right.
 - Time budgets should add up to roughly the interview length the text implies (default 45-60 minutes).
 - The reference solution is one complete Python 3 file that defines every entry function from every part, passes every test, uses only the standard library, and is written the way a strong candidate would write it (clear names, no cleverness for its own sake).
-- Do not reproduce the raw text verbatim; rewrite prompts in your own words, fully specified.
+- Do not reproduce the raw text verbatim. The prompt is what the interviewer says out loud; the spec block is what they know. Everything a test depends on must be in the spec.
 
 Reply with only one JSON object: {{"markdown": "<the question in exactly the format below>", "solution": "<the reference solution .py file>", "notes": "<anything you were unsure about, one or two sentences, or empty>"}}
 
@@ -115,7 +119,61 @@ Reply with only one JSON object: {{"markdown": "<corrected question markdown>", 
 
 def draft(text, reviewer, hint="", slug=None):
     """Return {"question", "markdown", "solution", "report", "notes"}; raises on model failure."""
-    raw = reviewer.ask_json(prompt_for(text, hint), SCHEMA)
+    return finish(reviewer.ask_json(prompt_for(text, hint), SCHEMA), reviewer, slug)
+
+
+VARIANT_FORMAT_NOTE = "Use exactly the same Markdown format as the examples (front matter, parts with entry/minutes, a ```spec block and a ```tests block per part)."
+
+
+def variant_prompt(examples_md, hint=""):
+    ex = "\n\n".join("<example>\n%s\n</example>" % e.strip()[:12000] for e in examples_md[:3])
+    return f"""You write new coding interview questions in the style of the examples: same difficulty band, same escalating multi-part structure, same kind of follow-ups, but a DIFFERENT scenario and a different core data model, so solving the example does not solve this one. Keep what makes the examples interview-realistic: an underspecified spoken prompt per part, a precise hidden spec, hidden tests.
+
+{ex}
+{('Guidance from the user: ' + hint.strip()[:1500]) if hint.strip() else ''}
+
+Rules: Python 3, standard library only; one entry function per part, JSON-serialisable arguments and return values; 6-10 tests per part including edge cases; time budgets similar to the examples; a complete reference solution that passes every test; set `kind:` in the front matter to the same value as the examples (or omit it) and `variantOf:` to the first example's id if one is given. {VARIANT_FORMAT_NOTE}
+
+Reply with only one JSON object: {{"markdown": "<the new question>", "solution": "<reference solution .py>", "notes": "<what you changed relative to the examples, one sentence>"}}
+
+The Markdown format, for reference:
+{FORMAT}"""
+
+
+DRILLS_SCHEMA = {"type": "object", "properties": {"questions": {"type": "array", "items": SCHEMA}}, "required": ["questions"]}
+
+
+def drills_prompt(focus, count, examples_md, minutes, hint=""):
+    ex = "\n\n".join("<example>\n%s\n</example>" % e.strip()[:6000] for e in examples_md[:2])
+    return f"""You write short, focused coding drills for interview practice. Each drill is ONE part, meant to take about {minutes} minutes, and targets this focus: {focus}.
+Write {count} distinct drills, each a different scenario, difficulty rising from the first to the last. Each has a spoken-style prompt (brief, with a couple of details deliberately left for the candidate to ask), a precise spec block, 6-10 hidden tests with edge cases, and a complete Python 3 reference solution (standard library only) that passes every test. Put `kind: drill` and `skills: {focus}` in the front matter, `minutes: {minutes}` on the part.
+{('Style reference from the user\'s own questions:' + chr(10) + ex) if examples_md else ''}
+{('Guidance from the user: ' + hint.strip()[:1500]) if hint.strip() else ''}
+
+Reply with only one JSON object: {{"questions": [{{"markdown": "<drill 1 in the Markdown format>", "solution": "<reference solution>", "notes": ""}}, ...]}}
+
+The Markdown format:
+{FORMAT}"""
+
+
+def revise_prompt(markdown, solution, instruction):
+    return f"""Revise this practice interview question as instructed, and keep the rest exactly as it is. If the instruction changes behaviour, update the spec, the tests and the reference solution together so they still agree. Keep the Markdown format identical.
+
+Instruction from the user: {instruction.strip()[:3000]}
+
+<markdown>
+{markdown}
+</markdown>
+
+<solution>
+{solution}
+</solution>
+
+Reply with only one JSON object: {{"markdown": "<revised question>", "solution": "<revised reference solution>", "notes": "<what you changed, briefly>"}}"""
+
+
+def finish(raw, reviewer, slug=None):
+    """Verify a (markdown, solution) pair, fix once if needed, return the draft dict."""
     markdown, solution, notes = str(raw.get("markdown") or ""), str(raw.get("solution") or ""), str(raw.get("notes") or "")
     if "## " not in markdown:
         raise ValueError("Claude did not return a question in the expected format")
@@ -126,9 +184,7 @@ def draft(text, reviewer, hint="", slug=None):
         m2, s2 = str(raw2.get("markdown") or ""), str(raw2.get("solution") or "")
         if "## " in m2:
             q2, report2 = verify(m2, s2)
-            passed_before = sum(p.get("passed", 0) for p in report["parts"])
-            passed_after = sum(p.get("passed", 0) for p in report2["parts"])
-            if report2["ok"] or passed_after >= passed_before:
+            if report2["ok"] or sum(p.get("passed", 0) for p in report2["parts"]) >= sum(p.get("passed", 0) for p in report["parts"]):
                 markdown, solution, q, report = m2, s2, q2, report2
                 notes = (notes + "\n" + str(raw2.get("notes") or "")).strip()
         rounds = 2
@@ -136,3 +192,28 @@ def draft(text, reviewer, hint="", slug=None):
         q["id"] = slug
     report["rounds"] = rounds
     return {"question": q, "markdown": markdown, "solution": solution, "report": report, "notes": notes}
+
+
+def variant(examples_md, reviewer, hint="", variant_of=None):
+    d = finish(reviewer.ask_json(variant_prompt(examples_md, hint), SCHEMA), reviewer)
+    if variant_of:
+        d["question"]["variantOf"] = variant_of
+    return d
+
+
+def drills(focus, count, examples_md, reviewer, minutes=12, hint=""):
+    raw = reviewer.ask_json(drills_prompt(focus, count, examples_md, minutes, hint), DRILLS_SCHEMA)
+    out = []
+    for item in (raw.get("questions") or [])[:count]:
+        try:
+            d = finish(item, reviewer)
+            d["question"]["kind"] = "drill"
+            d["question"].setdefault("skills", focus)
+            out.append(d)
+        except Exception as e:  # noqa: BLE001
+            out.append({"error": str(e)})
+    return out
+
+
+def revise(markdown, solution, instruction, reviewer, slug):
+    return finish(reviewer.ask_json(revise_prompt(markdown, solution, instruction), SCHEMA), reviewer, slug)
