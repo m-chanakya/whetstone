@@ -313,7 +313,7 @@ def summarize_submission(s):
     run = s.get("cpython") or s.get("browser") or {}
     return {
         "id": s["id"], "questionId": s["questionId"], "gateId": s["gateId"], "attemptId": s.get("attemptId"), "at": s["at"],
-        "elapsedSec": s.get("elapsedSec"), "gateSec": s.get("gateSec"), "lines": s.get("lines"),
+        "elapsedSec": s.get("elapsedSec"), "gateSec": s.get("gateSec"), "lines": s.get("lines"), "cpm": s.get("cpm"), "activeSec": s.get("activeSec"),
         "passed": run.get("passed"), "total": run.get("total"), "runtime": run.get("runtime"),
         "status": s.get("status", "done"), "feedback": s.get("feedback"), "questionsAsked": len(s.get("chat") or []) // 2,
     }

@@ -63,6 +63,25 @@ const fmtDate = iso => new Date(iso).toLocaleDateString(undefined,{month:'short'
 const fmtDateTime = iso => new Date(iso).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
 function fmtSec(s){ s = Math.max(0, Math.round(s||0)); const m = Math.floor(s/60); return m >= 60 ? `${Math.floor(m/60)}h ${m%60}m` : `${m}:${String(s%60).padStart(2,'0')}`; }
 const avg = xs => xs.length ? xs.reduce((a,b) => a+b, 0)/xs.length : 0;
+const median = xs => { if (!xs.length) return 0; const s = xs.slice().sort((a,b) => a-b); const m = Math.floor(s.length/2); return s.length % 2 ? s[m] : Math.round((s[m-1]+s[m])/2); };
+function hireEstimate(fullAtts, fbs){
+  const K = 3, last = fullAtts.filter(a => a.q.gates.length >= K).slice(-5);
+  if (!last.length) return {verdict:'Not enough data', score:0, confidence:'no', cls:'none', summary:'Finish at least one full attempt (three or more parts) and the estimate appears.', parts:[]};
+  const first = a => a.q.gates.slice(0, K).map(g => a.gates.get(g.id));
+  const clean = avg(last.map(a => first(a).filter(s => s && gateStatus(s) === 'pass').length / K)) * 100;
+  const pace = avg(last.map(a => { const gs = a.q.gates.slice(0, K); const budget = gs.reduce((x,g) => x + (g.minutes||0)*60, 0); const spent = first(a).reduce((x,s) => x + (s ? s.gateSec||0 : 0), 0); if (!budget) return 1; return Math.max(0, Math.min(1, 1 - Math.max(0, spent - budget) / budget)); })) * 100;
+  const recentFb = fbs.slice(-8);
+  const quality = recentFb.length ? (avg(recentFb.map(f => f.overall)) - 1) / 4 * 100 : null;
+  const process = recentFb.length ? (avg(recentFb.map(f => ((f.scores.clarifying || f.overall) + (f.scores.testing || f.overall)) / 2)) - 1) / 4 * 100 : null;
+  const parts = [{name:'First three parts passing', v:clean, note:'tests clean on parts 1–3, last ' + last.length + ' full attempt' + (last.length===1?'':'s')}, {name:'Inside the time budget', v:pace, note:'time on parts 1–3 vs their budgets'}, {name:'Review quality', v:quality, note:recentFb.length ? 'average verdict over the last ' + recentFb.length + ' reviews' : 'no reviews yet'}, {name:'Clarifying and testing', v:process, note:'asked the right questions, wrote own tests'}, {name:'Design readiness', v:null, note:'not measured yet'}];
+  const score = Math.round(clean*0.4 + pace*0.2 + (quality ?? 50)*0.25 + (process ?? 50)*0.15);
+  let verdict = score >= 80 ? 'Strong hire' : score >= 65 ? 'Hire' : score >= 50 ? 'Lean hire' : score >= 35 ? 'Lean no hire' : 'No hire';
+  if (verdict === 'Strong hire') verdict = 'Hire';
+  const confidence = last.length >= 4 && recentFb.length >= 4 ? 'medium' : 'low';
+  const weakest = parts.filter(p => p.v != null).sort((a,b) => a.v-b.v)[0];
+  const summary = `${verdict}: ${score}/100 on coding alone. ` + (weakest ? `The biggest drag is ${weakest.name.toLowerCase()} at ${Math.round(weakest.v)}%. ` : '') + (clean >= 90 && pace >= 80 ? 'The three-part bar is met; quality and questions decide the rest.' : clean < 60 ? 'Clearing parts 1–3 cleanly is the gate; everything else matters after that.' : 'Close to the bar; pace and clean follow-ups are where the points are.');
+  return {verdict, score, confidence, cls:score >= 65 ? 'good' : score >= 50 ? 'warn' : 'bad', summary, parts};
+}
 const tsId = () => new Date().toISOString().replace(/[-:]/g,'').replace(/\.\d+Z$/,'Z');
 function pips(score){
   const cls = score<=2 ? 's-low' : score===3 ? 's-mid' : 's-high';
@@ -132,7 +151,7 @@ async function fetchSubmission(s){
   try { return await API.submission(s.id); } catch(e){ return s; }
 }
 const runOf = s => s.cpython || s.browser || {};
-const summarizeS = s => ({id:s.id, questionId:s.questionId, gateId:s.gateId, attemptId:s.attemptId, at:s.at, elapsedSec:s.elapsedSec, gateSec:s.gateSec, lines:s.lines, passed:runOf(s).passed ?? null, total:runOf(s).total ?? null, runtime:runOf(s).runtime || null, status:s.status || 'grading', feedback:s.feedback || null});
+const summarizeS = s => ({id:s.id, questionId:s.questionId, gateId:s.gateId, attemptId:s.attemptId, at:s.at, elapsedSec:s.elapsedSec, gateSec:s.gateSec, lines:s.lines, cpm:s.cpm ?? null, activeSec:s.activeSec ?? null, passed:runOf(s).passed ?? null, total:runOf(s).total ?? null, runtime:runOf(s).runtime || null, status:s.status || 'grading', feedback:s.feedback || null});
 
 async function saveQuestion(q){
   setSaveState('busy');
@@ -323,7 +342,7 @@ function renderRun(r){
 }
 
 /* ---------- editor ---------- */
-function makeEditor(host, {value='', lang='python', onChange, placeholder='', readOnly=false, onRun, onSubmit, theme='default'}){
+function makeEditor(host, {value='', lang='python', onChange, placeholder='', readOnly=false, onRun, onSubmit, theme='default', onType}){
   if (window.CodeMirror){
     let silent = false;
     const cm = window.CodeMirror(host, {
@@ -341,15 +360,16 @@ function makeEditor(host, {value='', lang='python', onChange, placeholder='', re
     inp.setAttribute('aria-label', readOnly ? 'Code' : 'Code editor. Press Escape to leave the editor.');
     // Keep password managers (iCloud Passwords, 1Password, LastPass, Bitwarden) off the editor's input.
     for (const [k,v] of Object.entries({autocomplete:'off', 'data-1p-ignore':'', 'data-lpignore':'true', 'data-bwignore':'', 'data-form-type':'other', name:'code-editor'})) inp.setAttribute(k, v);
-    cm.on('change', () => { if (!silent && onChange) onChange(cm.getValue()); });
+    const stats = {chars:0, lastEditAt:0};
+    cm.on('change', (c, ch) => { if (silent) return; if (ch.origin && (ch.origin.startsWith('+') || ch.origin === 'paste')){ stats.chars += ch.text.join('\n').length; stats.lastEditAt = Date.now(); if (onType) onType(stats); } if (onChange) onChange(cm.getValue()); });
     requestAnimationFrame(() => cm.refresh());
-    return {get:() => cm.getValue(), set:v => { silent = true; cm.setValue(v); silent = false; }, focus:() => cm.focus()};
+    return {get:() => cm.getValue(), set:v => { silent = true; cm.setValue(v); silent = false; }, focus:() => cm.focus(), lines:() => cm.lineCount()};
   }
   const ta = h('textarea',{class:'plain', spellcheck:'false', placeholder, 'aria-label':'Code editor', value, readonly:readOnly,
     oninput:() => onChange && onChange(ta.value),
     onkeydown:e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && onRun){ e.preventDefault(); onRun(); } }});
   host.append(ta);
-  return {get:() => ta.value, set:v => { ta.value = v; }, focus:() => ta.focus()};
+  return {get:() => ta.value, set:v => { ta.value = v; }, focus:() => ta.focus(), lines:() => ta.value.split('\n').length};
 }
 
 /* ---------- feedback ---------- */
@@ -493,7 +513,7 @@ async function renderTry(qid){
   if (!S.attempt || S.attempt.qid !== qid){
     const prev = attemptsOf(qid); const lastSub = prev.length ? prev[prev.length-1].subs.slice(-1)[0] : null;
     const rs = S.resume && S.resume.qid === qid ? S.resume : null; S.resume = null;
-    S.attempt = {qid, id:tsId(), startedAt:Date.now(), gi:rs ? rs.gi : 0, gateStartedAt:Date.now(), gateAcc:{}, code:rs ? rs.code : '', results:{}, subs:{}, lastSub, done:false, pausedAt:0, pausedTotal:0, tab:'question', console:[], reached:rs ? rs.reached : 0, chats:{}, resumedFrom:rs ? rs.from : null};
+    S.attempt = {qid, id:tsId(), startedAt:Date.now(), gi:rs ? rs.gi : 0, gateStartedAt:Date.now(), gateAcc:{}, code:rs ? rs.code : '', results:{}, subs:{}, lastSub, done:false, pausedAt:0, pausedTotal:0, tab:'question', console:[], reached:rs ? rs.reached : 0, chats:{}, resumedFrom:rs ? rs.from : null, typing:{}, lastEditAt:0};
     if (rs) toast(`Resumed with your code from ${fmtDateTime(rs.from.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, '$1-$2-$3T$4:$5:$6Z'))}; starting at part ${S.attempt.gi + 1}.`);
     if (q.lang === 'python') Runner.warm(m => { const el = $('#pyStatus'); if (el) el.textContent = m; });
   }
@@ -501,9 +521,12 @@ async function renderTry(qid){
   const a = S.attempt, gate = q.gates[a.gi];
   const now = () => (a.pausedAt || Date.now()) - a.pausedTotal;
   const tAll = h('span',{class:'timer'}), tGate = h('span',{class:'timer'});
+  const typ = () => a.typing[gate.id] = a.typing[gate.id] || {chars:0, activeSec:0};
   const tick = () => {
     const all = (now() - a.startedAt)/1000, g = (a.gateAcc[a.gi] || 0) + (now() - a.gateStartedAt)/1000;
     tAll.textContent = fmtSec(all); tGate.textContent = fmtSec(g);
+    if (!a.pausedAt && a.lastEditAt && Date.now() - a.lastEditAt < 5000) typ().activeSec++;
+    const st = $('#typeStat'); if (st){ const ty = typ(); const cpm = ty.activeSec >= 5 ? Math.round(ty.chars / (ty.activeSec/60)) : null; st.textContent = `${curEditor ? curEditor.lines() : 0} lines` + (cpm != null ? ` · ${cpm} cpm` : ''); }
     tGate.classList.toggle('over', !!gate.minutes && g > gate.minutes*60);
     const budget = q.gates.reduce((s,x) => s + (x.minutes||0), 0); tAll.classList.toggle('over', !!budget && all > budget*60);
   };
@@ -527,14 +550,14 @@ async function renderTry(qid){
   const edHost = h('div',{class:'editor pad-ed'});
   const console_ = h('div',{class:'console', id:'console'});
   const right = h('section',{class:'padright'},
-    h('div',{class:'edbar'}, h('span',{class:'lang', text:LANGS[q.lang] || q.lang}), h('span',{class:'hist', id:'pyStatus'}), h('span',{class:'spacer'}),
+    h('div',{class:'edbar'}, h('span',{class:'lang', text:LANGS[q.lang] || q.lang}), h('span',{class:'hist', id:'typeStat', title:'Lines in the editor · characters typed per active minute'}), h('span',{class:'hist', id:'pyStatus'}), h('span',{class:'spacer'}),
       a.lastSub && !a.code && h('button',{class:'btn quiet small', text:'Load my last submission', onclick:async () => { const f = await fetchSubmission(a.lastSub); if (f.code){ a.code = f.code; curEditor.set(f.code); } }}),
       h('button',{class:'btn run', id:'runBtn', onclick:() => runCurrent(q)}, '▶ Run ', h('kbd',{text:'⌘↵'})),
       h('button',{class:'btn primary', id:'submitBtn', onclick:() => submitCurrent(q)}, `Submit part ${a.gi+1} `, h('kbd',{text:'⇧⌘↵'}))),
     edHost, console_);
   app.append(topbar, h('div',{class:'pad'}, left, right));
   renderPadLeft(q);
-  curEditor = makeEditor(edHost, {value:a.code, lang:q.lang, theme:'pad', placeholder:'# Build on the same file through the parts.\n# Your own tests go under: if __name__ == "__main__":', onChange:v => { a.code = v; }, onRun:() => runCurrent(q), onSubmit:() => submitCurrent(q)});
+  curEditor = makeEditor(edHost, {value:a.code, lang:q.lang, theme:'pad', placeholder:'# Build on the same file through the parts.\n# Your own tests go under: if __name__ == "__main__":', onChange:v => { a.code = v; }, onRun:() => runCurrent(q), onSubmit:() => submitCurrent(q), onType:st => { typ().chars += st.chars - (typ()._seen || 0); typ()._seen = st.chars; a.lastEditAt = st.lastEditAt; }});
   renderConsole();
   curEditor.focus();
 }
@@ -627,6 +650,7 @@ async function submitCurrent(q){
   const sub = {id:tsId() + '-' + gate.id, questionId:q.id, gateId:gate.id, attemptId:a.id, at:new Date().toISOString(), lang:q.lang, code:a.code, lines:a.code.split('\n').length,
     elapsedSec:Math.round((nowMs - a.startedAt)/1000), gateSec:Math.round((a.gateAcc[a.gi] || 0) + (nowMs - a.gateStartedAt)/1000),
     chat:(a.chats[gate.id] || []).map(m => ({role:m.role, text:m.text})), resumedFrom:a.resumedFrom || undefined,
+    typedChars:(a.typing[gate.id] || {}).chars || 0, activeSec:(a.typing[gate.id] || {}).activeSec || 0, cpm:(a.typing[gate.id] && a.typing[gate.id].activeSec >= 5) ? Math.round(a.typing[gate.id].chars / (a.typing[gate.id].activeSec/60)) : null,
     browser:r ? {passed:r.passed, total:r.total, runtime:r.runtime, error:r.error || '', cases:r.cases.map(c => ({raw:c.raw, pass:c.pass, got:c.got, err:c.err}))} : null};
   a.subs[gate.id] = sub;
   const saved = await saveSubmission(sub);
@@ -810,11 +834,22 @@ function renderAnalytics(qidFilter){
   const dimAvg = list => Object.fromEntries(DIMS.map(([k]) => [k, avg(list.map(f => f.scores[k] || f.overall))]));
   const dNow = dimAvg(fbs), dRecent = dimAvg(recent), dEarlier = earlier.length ? dimAvg(earlier) : null;
   const gatesTotal = rows.reduce((s,r) => s + r.q.gates.length, 0), gatesPassed = rows.reduce((s,r) => s + r.a.passed, 0);
+
+  // ---- hire estimate
+  const est = hireEstimate(fullAtts, fbs);
+  app.append(h('div',{class:'hire ' + est.cls},
+    h('div',{class:'hire-verdict'}, h('div',{class:'label', text:'Estimated outcome, OpenAI-style coding bar'}), h('div',{class:'big', text:est.verdict}), h('div',{class:'hist', text:`${est.score}/100 · ${est.confidence} confidence`})),
+    h('div',{class:'hire-body'},
+      h('p',{text:est.summary}),
+      h('div',{class:'hire-parts'}, est.parts.map(p => h('div',{class:'hbar'}, h('div',null, p.name, h('span',{class:'n', text:p.note})), bar(p.v/100, p.v >= 70 ? 'good' : p.v >= 45 ? 'warn' : 'bad'), h('span',{class:'val', text:p.v == null ? '–' : Math.round(p.v) + '%'})))),
+      h('p',{class:'hist', text:'How it is computed: coding readiness is 40% clean first-three parts, 20% inside budget, 25% review quality, 15% clarifying and testing, over your last five full attempts. Design readiness is not measured yet (no design rounds in Whetstone), so the overall is coding only and the verdict is capped at Hire until it is. Interviewers in the write-ups pass three clean parts with sensible questions asked; this estimate follows that bar, not a formal rubric.'}))));
   app.append(h('div',{class:'tiles'},
     h('div',{class:'tile'}, h('b',{text:fbs.length ? avg(recent.map(f => f.overall)).toFixed(1) : '–'}), h('span',{text:fbs.length ? `quality, last ${recent.length} review${recent.length===1?'':'s'}` + (earlier.length ? ` (was ${avg(earlier.map(f => f.overall)).toFixed(1)})` : '') : 'no reviews yet'})),
     h('div',{class:'tile'}, h('b',{text:gatesTotal ? Math.round(gatesPassed/gatesTotal*100) + '%' : '–'}), h('span',{text:'parts passed, latest attempts'})),
     h('div',{class:'tile'}, h('b',{text:String(fullAtts.length)}), h('span',{text:`full attempt${fullAtts.length===1?'':'s'}, ${allAtts.length - fullAtts.length} drill${allAtts.length - fullAtts.length===1?'':'s'}`})),
-    h('div',{class:'tile'}, h('b',{text:fmtSec(avg(fullAtts.map(a => a.totalSec)))}), h('span',{text:'average full attempt'}))));
+    h('div',{class:'tile'}, h('b',{text:fmtSec(avg(fullAtts.map(a => a.totalSec)))}), h('span',{text:'average full attempt'})),
+    h('div',{class:'tile'}, h('b',{text:subs.some(s => s.lines) ? Math.round(avg(subs.filter(s => s.lines).map(s => s.lines))) : '–'}), h('span',{text:'lines of code per submitted part'})),
+    h('div',{class:'tile'}, h('b',{text:subs.some(s => s.cpm) ? median(subs.filter(s => s.cpm).map(s => s.cpm)) : '–'}), h('span',{text:'typing speed, chars per active minute (median)'}))));
 
   // ---- fix next
   const fixes = [];
@@ -884,10 +919,10 @@ function renderAnalytics(qidFilter){
 
   // ---- table
   const tsec2 = h('section',{class:'wide'}, h('h3',{text:'All submissions'}));
-  tsec2.append(h('table',null, h('thead',null, h('tr',null, h('th',{text:'When'}), h('th',{text:'Question'}), h('th',{text:'Part'}), h('th',{class:'num', text:'Part time'}), h('th',{class:'num', text:'Tests'}), h('th',{class:'num', text:'Asked'}), h('th',{class:'num', text:'Quality'}), h('th',{text:'Gaps'}))),
+  tsec2.append(h('table',null, h('thead',null, h('tr',null, h('th',{text:'When'}), h('th',{text:'Question'}), h('th',{text:'Part'}), h('th',{class:'num', text:'Part time'}), h('th',{class:'num', text:'Tests'}), h('th',{class:'num', text:'Lines'}), h('th',{class:'num', text:'cpm'}), h('th',{class:'num', text:'Asked'}), h('th',{class:'num', text:'Quality'}), h('th',{text:'Gaps'}))),
     h('tbody',null, subs.slice().reverse().slice(0,200).map(s => { const q = S.questions.get(s.questionId); const gi = q ? q.gates.findIndex(g => g.id === s.gateId) : -1;
       return h('tr',null, h('td',{text:fmtDateTime(s.at)}), h('td',null, h('a',{href:'#/q/' + s.questionId, text:q ? q.title : s.questionId})), h('td',{text:gi >= 0 ? `${gi+1}. ${q.gates[gi].title}` : s.gateId}),
-        h('td',{class:'num', text:fmtSec(s.gateSec)}), h('td',{class:'num ' + (gateStatus(s) === 'pass' ? 'ok' : 'fail'), text:s.total ? `${s.passed}/${s.total}` : '–'}), h('td',{class:'num', text:String(s.questionsAsked || 0)}), h('td',{class:'num', text:s.feedback ? s.feedback.overall + '/5' : '–'}), h('td',{text:s.feedback ? s.feedback.gaps.map(x => (SKILLS[x]||[x])[0]).join(', ') : ''})); }))));
+        h('td',{class:'num', text:fmtSec(s.gateSec)}), h('td',{class:'num ' + (gateStatus(s) === 'pass' ? 'ok' : 'fail'), text:s.total ? `${s.passed}/${s.total}` : '–'}), h('td',{class:'num', text:s.lines ? String(s.lines) : '–'}), h('td',{class:'num', text:s.cpm ? String(s.cpm) : '–'}), h('td',{class:'num', text:String(s.questionsAsked || 0)}), h('td',{class:'num', text:s.feedback ? s.feedback.overall + '/5' : '–'}), h('td',{text:s.feedback ? s.feedback.gaps.map(x => (SKILLS[x]||[x])[0]).join(', ') : ''})); }))));
   grid.append(tsec2);
   app.append(grid);
 }
