@@ -270,7 +270,16 @@ details.earlier h4{margin-top:10px}
 .edbar kbd{border-color:#494D64;color:#A5ADCE;background:none}
 .pad .editor.pad-ed{flex:1;height:auto;min-height:0;border:0;border-radius:0}
 .gates .gate{padding:4px 9px}
-.console{flex:none;height:30%;min-height:140px;max-height:45%;resize:vertical;overflow:auto;background:#14161E;color:#CAD3F5;font:400 .84rem/1.55 var(--font-m);padding:10px 14px;border-top:1px solid #363A4F}
+.console{flex:none;height:34%;min-height:140px;max-height:70%;resize:vertical;overflow:auto;background:#14161E;color:#CAD3F5;font:400 .84rem/1.55 var(--font-m);padding:8px 14px 12px;border-top:1px solid #363A4F}
+.console.big{height:62%}
+.console .cbar{display:flex;gap:14px;align-items:center;position:sticky;top:-8px;background:#14161E;padding:4px 0 6px;margin-bottom:4px;border-bottom:1px solid #22263A;font-size:.78rem}
+.console .clink{background:none;border:0;padding:0;color:#8AADF4;cursor:pointer;font:inherit}
+.console .clink:hover{text-decoration:underline}
+.console .cearlier{opacity:.6;border-bottom:1px dashed #363A4F;margin-bottom:8px;padding-bottom:6px}
+.console .cpre.jump{cursor:pointer}
+.console .cpre.jump:hover{text-decoration:underline;text-decoration-color:#ED879666}
+.cm-s-pad .cm-errline{background:rgba(237,135,150,.16)}
+.cm-s-pad .CodeMirror-gutter-wrapper.cm-errgutter .CodeMirror-linenumber, .cm-s-pad .cm-errgutter .CodeMirror-linenumber{color:#ED8796;font-weight:700}
 .console .cline{white-space:pre-wrap;word-break:break-word}
 .console .cline.head{margin-top:6px;font-weight:600}
 .console .muted{color:#8087A2;font-weight:400}

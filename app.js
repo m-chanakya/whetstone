@@ -355,6 +355,10 @@ function renderRun(r){
 }
 
 /* ---------- editor ---------- */
+function errorLine(err){
+  const m = [...String(err || '').matchAll(/File "main\.py", line (\d+)/g)]; if (m.length) return Number(m[m.length-1][1]);
+  const js = String(err || '').match(/<anonymous>:(\d+)|main\.js:(\d+)|line (\d+)/); return js ? Number(js[1] || js[2] || js[3]) : 0;
+}
 /* ---------- editor: completion ---------- */
 const PY_WORDS = ('False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield ' +
   'abs all any ascii bin bool bytearray bytes callable chr classmethod complex dict dir divmod enumerate eval filter float format frozenset getattr globals hasattr hash hex id input int isinstance issubclass iter len list map max min next object oct open ord pow print property range repr reversed round set setattr slice sorted staticmethod str sum super tuple type vars zip ' +
@@ -429,7 +433,13 @@ function makeEditor(host, {value='', lang='python', onChange, placeholder='', re
     const stats = {chars:0, lastEditAt:0};
     cm.on('change', (c, ch) => { if (silent) return; if (ch.origin && (ch.origin.startsWith('+') || ch.origin === 'paste')){ stats.chars += ch.text.join('\n').length; stats.lastEditAt = Date.now(); if (onType) onType(stats); } if (onChange) onChange(cm.getValue()); });
     requestAnimationFrame(() => cm.refresh());
-    return {get:() => cm.getValue(), set:v => { silent = true; cm.setValue(v); silent = false; }, focus:() => cm.focus(), lines:() => cm.lineCount()};
+    let errHandle = null;
+    const clearError = () => { if (errHandle != null){ cm.removeLineClass(errHandle, 'background', 'cm-errline'); cm.removeLineClass(errHandle, 'gutter', 'cm-errgutter'); errHandle = null; } };
+    cm.on('change', clearError);
+    return {get:() => cm.getValue(), set:v => { silent = true; cm.setValue(v); silent = false; }, focus:() => cm.focus(), lines:() => cm.lineCount(), refresh:() => cm.refresh(),
+      goTo:ln => { const n = Math.max(0, Math.min(cm.lineCount()-1, ln-1)); cm.setCursor({line:n, ch:0}); cm.scrollIntoView({line:n, ch:0}, 80); cm.focus(); },
+      markError:(ln, msg) => { clearError(); const n = ln-1; if (n < 0 || n >= cm.lineCount()) return; errHandle = cm.getLineHandle(n); cm.addLineClass(errHandle, 'background', 'cm-errline'); cm.addLineClass(errHandle, 'gutter', 'cm-errgutter'); cm.scrollIntoView({line:n, ch:0}, 80); },
+      clearError};
   }
   const ta = h('textarea',{class:'plain', spellcheck:'false', placeholder, 'aria-label':'Code editor', value, readonly:readOnly,
     oninput:() => onChange && onChange(ta.value),
@@ -794,17 +804,25 @@ function renderConsole(){
   const a = S.attempt, c = $('#console'); if (!a || !c) return;
   c.replaceChildren();
   if (!a.console.length){ c.append(h('div',{class:'cline muted', text:'Run executes your file as a script: write your own tests (asserts, prints, a main block) and see the output here. ⌘↵ runs, ⇧⌘↵ submits; submit grades against hidden tests and reviews your approach, code and tests.'}), h('div',{class:'cline muted', text:'Editor: completions as you type (Tab or ⌃Space to open, ↵ to accept), ⌘D select next occurrence, ⌘/ comment, ⌘F find, ⌥⌘F replace, ⌥↑↓ move line, ⇧⌘D duplicate line, ⌘= / ⌘- font size, ⌥Z wrap.'})); return; }
-  for (const item of a.console.slice(-6)){
-    if (item.kind === 'busy'){ c.append(h('div',{class:'cline'}, h('span',{class:'dot'}), ' ' + item.text)); continue; }
+  const runs = a.console.filter(x => x.kind === 'run'), busy = a.console.find(x => x.kind === 'busy');
+  const bar = h('div',{class:'cbar'}, h('span',{class:'muted', text:busy ? '' : runs.length ? `Output of the last run (${runs[runs.length-1].when})` : 'Output'}), h('span',{class:'spacer'}),
+    runs.length > 1 && h('button',{class:'clink', text:`earlier runs (${runs.length - 1})`, onclick:e => { const d = c.querySelector('.cearlier'); if (d){ d.hidden = !d.hidden; e.target.textContent = (d.hidden ? 'earlier runs (' : 'hide earlier runs (') + (runs.length - 1) + ')'; } }}),
+    h('button',{class:'clink', text:c.classList.contains('big') ? 'shrink' : 'expand', onclick:() => { c.classList.toggle('big'); if (curEditor && curEditor.refresh) curEditor.refresh(); renderConsole(); }}),
+    runs.length > 0 && h('button',{class:'clink', text:'clear', onclick:() => { a.console = []; if (curEditor && curEditor.clearError) curEditor.clearError(); renderConsole(); }}));
+  c.append(bar);
+  const renderRun = (item, into) => {
     const r = item.r;
     const status = r.error ? h('span',{class:'fail', text:r.script ? 'Error' : 'Hidden tests: error'}) : r.script ? h('span',{class:'ok', text:'Ran'}) : h('span',{class:r.passed === r.total ? 'ok' : 'fail', text:`Hidden tests: ${r.passed} of ${r.total} passed`});
-    c.append(h('div',{class:'cline head'}, h('span',{class:'muted', text:item.when + '  '}), status, h('span',{class:'muted', text:'   ' + [r.runtime, r.ms != null ? r.ms + ' ms' : ''].filter(Boolean).join(', ')})));
-    if (r.error) c.append(h('pre',{class:'cpre fail', text:r.error}));
-    for (const g of r.cases || []) c.append(h('div',{class:'cline ' + (g.pass ? 'ok' : 'fail')}, (g.pass ? '✓ ' : '✗ ') + g.raw, !g.pass && h('span',{class:'got', text:'   ' + (g.err ? 'threw: ' : 'got: ') + g.got})));
-    if (r.stdout) c.append(h('pre',{class:'cpre', text:r.stdout}));
-    else if (r.script && !r.error) c.append(h('div',{class:'cline muted', text:'(no output; print or assert in your own test block to see something here)'}));
-  }
-  c.scrollTop = c.scrollHeight;
+    into.append(h('div',{class:'cline head'}, h('span',{class:'muted', text:item.when + '  '}), status, h('span',{class:'muted', text:'   ' + [r.runtime, r.ms != null ? r.ms + ' ms' : ''].filter(Boolean).join(', ')})));
+    if (r.stdout) put(into, h('pre',{class:'cpre', text:r.stdout}), r.stdout.length >= 20000 && h('div',{class:'cline muted', text:'(output cut at 20,000 characters)'}));
+    else if (r.script && !r.error) into.append(h('div',{class:'cline muted', text:'(no output; print or assert in your own test block to see something here)'}));
+    for (const g of r.cases || []) into.append(put(h('div',{class:'cline ' + (g.pass ? 'ok' : 'fail')}), (g.pass ? '✓ ' : '✗ ') + g.raw, !g.pass && h('span',{class:'got', text:'   ' + (g.err ? 'threw: ' : 'got: ') + g.got})));
+    if (r.error){ const ln = errorLine(r.error); into.append(h('pre',{class:'cpre fail' + (ln ? ' jump' : ''), text:r.error, title:ln ? 'Click to jump to line ' + ln : null, onclick:ln ? () => curEditor && curEditor.goTo(ln) : null})); }
+  };
+  if (busy) c.append(h('div',{class:'cline'}, h('span',{class:'dot'}), ' ' + busy.text));
+  if (runs.length > 1){ const d = h('div',{class:'cearlier', hidden:true}); for (const item of runs.slice(-6, -1)) renderRun(item, d); c.append(d); }
+  if (runs.length) renderRun(runs[runs.length-1], c);
+  c.scrollTop = busy ? c.scrollHeight : 0;
 }
 function advanceGate(q){
   const a = S.attempt; if (a.gi >= q.gates.length - 1) return;
@@ -826,7 +844,7 @@ async function runCurrent(q, hidden){
   const r = hidden ? await runGate(q, gate, a.code, prog) : await runScript(q, a.code, prog);
   a.busy = false; if (hidden) a.results[gate.id] = r;
   a.console = a.console.filter(x => x.kind !== 'busy'); a.console.push({kind:'run', r, when:new Date().toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit',second:'2-digit'})});
-  if (S.attempt === a && $('#console')){ renderConsole(); $('#runBtn').disabled = false; }
+  if (S.attempt === a && $('#console')){ renderConsole(); $('#runBtn').disabled = false; if (curEditor && curEditor.markError){ const ln = r && r.error ? errorLine(r.error) : 0; if (ln) curEditor.markError(ln, r.error); else curEditor.clearError(); } }
   return r;
 }
 async function submitCurrent(q){
