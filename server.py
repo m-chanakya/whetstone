@@ -364,6 +364,15 @@ class App:
         self.files.mark_dirty()
         return q
 
+    def gym_sessions(self):
+        f = self.files.data / "gym.json"
+        if not f.exists():
+            return []
+        try:
+            return [x for x in (json.loads(f.read_text()).get("sessions") or []) if isinstance(x, dict)]
+        except (json.JSONDecodeError, AttributeError):
+            return []
+
     def question_markdown(self, qid):
         q = self.store.question(qid)
         if not q:
@@ -450,6 +459,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, s) if s else self._json(404, {"error": "not found"})
         if p == "/api/export":
             return self._json(200, st.export())
+        if p == "/api/gym":
+            return self._json(200, {"sessions": self.app.gym_sessions()})
         if p == "/api/plan":
             f = self.app.files.data / "plan.json"
             if f.exists():
@@ -567,6 +578,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 return self._json(200, {"kind": "none", "text": "", "error": str(e)[:200]})
             return self._json(200, n)
+        if p == "/api/gym":
+            sess = self._body()
+            if not isinstance(sess, dict) or not sess.get("id"):
+                return self._json(400, {"error": "a session needs an id"})
+            sessions = [x for x in self.app.gym_sessions() if x.get("id") != sess["id"]] + [sess]
+            sessions.sort(key=lambda x: str(x.get("startedAt") or ""))
+            (self.app.files.data / "gym.json").write_text(json.dumps({"sessions": sessions[-500:]}, indent=1) + "\n")
+            return self._json(200, sess)
         if p == "/api/plan":
             plan = self._body()
             if not isinstance(plan, dict) or not isinstance(plan.get("stages"), list):

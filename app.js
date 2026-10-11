@@ -26,7 +26,7 @@ const VERDICT = ['','Not there yet','Shaky','Borderline','Solid','Strong'];
 const LANGS = {python:'Python', javascript:'JavaScript'};
 
 /* ---------- state ---------- */
-const S = { loading:true, index:null, questions:new Map(), subs:[], view:null, attempt:null, busy:null, dirty:false, plan:null };
+const S = { loading:true, index:null, questions:new Map(), subs:[], view:null, attempt:null, busy:null, dirty:false, plan:null, gyms:[] };
 const DEFAULT_PLAN = {company:'OpenAI', stages:[{name:'Phone screen', date:'2026-10-22T09:00', rounds:['Coding','Architecture'], note:'both rounds must pass'}, {name:'Onsite', date:'', rounds:['Coding','Architecture','Previous design','Behavioral'], note:'unlocked by the phone screen; dates TBD'}]};
 const $ = s => document.querySelector(s);
 const app = $('#app');
@@ -140,6 +140,8 @@ const API = {
   import(data){ return this.call('POST', '/api/import', data); },
   plan(){ return this.call('GET', '/api/plan'); },
   putPlan(p){ return this.call('POST', '/api/plan', p); },
+  gyms(){ return this.call('GET', '/api/gym'); },
+  putGym(s){ return this.call('POST', '/api/gym', s); },
 };
 
 /* ---------- data ---------- */
@@ -147,7 +149,7 @@ async function loadIndex(){
   S.health = null;
   try { S.health = await API.health(); } catch(e){ S.health = null; }
   let idx = {questions:[], submissions:[]};
-  if (S.health){ try { idx = await API.index(); } catch(e){ toast('The backend answered but the index failed: ' + e.message); } try { S.plan = await API.plan(); } catch(e){ S.plan = null; } }
+  if (S.health){ try { idx = await API.index(); } catch(e){ toast('The backend answered but the index failed: ' + e.message); } try { S.plan = await API.plan(); } catch(e){ S.plan = null; } try { S.gyms = (await API.gyms()).sessions || []; } catch(e){ S.gyms = []; } }
   S.index = idx;
   S.questions = new Map(idx.questions.map(q => [q.id, q]));
   S.subs = idx.submissions.slice().sort((a,b) => a.at.localeCompare(b.at));
@@ -465,20 +467,24 @@ function renderReview(fb){
 
 /* ---------- routing ---------- */
 function route(){
-  const hash = location.hash.replace(/^#\/?/, '');
+  const full = location.hash.replace(/^#\/?/, ''), hash = full.split('#')[0], anchor = full.split('#')[1] || '';
   const [p0, p1, p2] = hash.split('/');
+  const r = routeOf(p0, p1, p2); r.anchor = anchor; return r;
+}
+function routeOf(p0, p1, p2){
   if (!p0) return {view:'questions'};
   if (p0 === 'analytics') return {view:'analytics', qid:p1};
   if (p0 === 'settings') return {view:'settings'};
   if (p0 === 'new') return {view:'edit'};
   if (p0 === 'drills') return {view:'drills'};
+  if (p0 === 'gym') return p1 ? (p2 === 'go' ? {view:'try', gym:p1} : {view:'gym', gid:p1}) : {view:'gym'};
   if (p0 === 'q' && p1) return {view:p2 === 'edit' ? 'edit' : p2 === 'try' ? 'try' : 'question', qid:p1};
   return {view:'questions'};
 }
 window.addEventListener('hashchange', () => { if (S.attempt && !S.attempt.done && route().view !== 'try'){ if (!confirm('Leave this attempt? Unsubmitted code is kept in the editor only until you leave.')){ location.hash = '#/q/' + S.attempt.qid + '/try'; return; } Draft.clear(); } render(); });
 function render(){
   const r = route(); S.view = r.view;
-  for (const a of document.querySelectorAll('.tab')) a.toggleAttribute('aria-current', false), (a.dataset.view === r.view || (a.dataset.view === 'questions' && ['question','try','edit'].includes(r.view) && !(S.questions.get(r.qid) || {}).kind)) && a.setAttribute('aria-current','page');
+  for (const a of document.querySelectorAll('.tab')) a.toggleAttribute('aria-current', false), (a.dataset.view === r.view || (a.dataset.view === 'questions' && ['question','try','edit'].includes(r.view) && !r.gym && !(S.questions.get(r.qid) || {}).kind) || (a.dataset.view === 'gym' && r.view === 'try' && r.gym)) && a.setAttribute('aria-current','page');
   if (timerInt){ clearInterval(timerInt); timerInt = null; }
   curEditor = null; app.replaceChildren();
   if (S.loading){ app.append(h('div',{class:'loading', text:'Opening your notebook…'})); return; }
@@ -486,12 +492,14 @@ function render(){
   if (planInt){ clearInterval(planInt); planInt = null; }
   if (r.view === 'questions') renderQuestions();
   else if (r.view === 'question') renderQuestion(r.qid);
-  else if (r.view === 'try') renderTry(r.qid);
+  else if (r.view === 'try'){ if (r.gym){ const g = S.gyms.find(x => x.id === r.gym); if (S.attempt && S.attempt.gym && S.attempt.gym.id === r.gym && !S.attempt.done){ renderTry(S.attempt.qid, S.attempt.gym); return; } const n = g ? gymStation(g) : -1; if (!g || n < 0){ location.hash = g ? '#/gym/' + g.id : '#/gym'; return; } renderTry(g.drillIds[n], {id:g.id, n}); } else renderTry(r.qid); }
+  else if (r.view === 'gym') renderGym(r.gid);
   else if (r.view === 'edit') renderEdit(r.qid);
   else if (r.view === 'analytics') renderAnalytics(r.qid);
   else if (r.view === 'drills') renderDrills();
   else renderSettings();
-  window.scrollTo(0,0);
+  if (r.anchor){ requestAnimationFrame(() => { const el = document.getElementById(r.anchor); if (el) el.scrollIntoView({behavior:'smooth', block:'start'}); }); }
+  else window.scrollTo(0,0);
 }
 
 /* ---------- questions list ---------- */
@@ -601,9 +609,10 @@ async function openSubmission(q, gate, gi, s){
 }
 
 /* ---------- try (interview pad) ---------- */
-async function renderTry(qid){
+async function renderTry(qid, gym){
   const q = await fetchQuestion(qid); if (!q){ app.append(h('p',{class:'none', text:'That question is not in the index.'})); return; }
   if (S.view !== 'try') return;
+  if (S.attempt && gym && (!S.attempt.gym || S.attempt.gym.id !== gym.id || S.attempt.gym.n !== gym.n)) S.attempt = null;
   if (!S.attempt || S.attempt.qid !== qid){
     const prev = attemptsOf(qid); const lastSub = prev.length ? prev[prev.length-1].subs.slice(-1)[0] : null;
     const rs = S.resume && S.resume.qid === qid ? S.resume : null; S.resume = null;
@@ -613,10 +622,11 @@ async function renderTry(qid){
       S.attempt = {...d, lastSub, done:false, pausedAt:0, pausedTotal:(d.pausedTotal || 0) + (d.pausedAt ? d.savedAt - d.pausedAt : 0) + gap, asking:false, nudging:false, voice:false};
       for (const s of Object.values(S.attempt.subs || {})) if (s.pending) waitForEval(s.id, full => { Object.assign(s, {feedback:full.feedback, cpython:full.cpython, reviewError:full.reviewError, pending:null}); if (S.attempt && S.attempt.tab === 'feedback') renderPadLeft(q); });
       toast(`Restored your attempt after a reload; the ${fmtSec(gap/1000)} away did not count. Part ${S.attempt.gi + 1}, ${fmtSec((Date.now() - S.attempt.pausedTotal - S.attempt.startedAt)/1000)} on the clock.`);
+      if (gym) S.attempt.gym = gym;
     } else if (d && d.qid !== qid && !confirm(`You have an unfinished attempt on "${(S.questions.get(d.qid) || {}).title || d.qid}" from a reload. Starting this one discards it. Continue?`)){ location.hash = '#/q/' + d.qid + '/try'; return; }
     else {
     Draft.clear();
-    S.attempt = {qid, id:tsId(), startedAt:Date.now(), gi:rs ? rs.gi : 0, gateStartedAt:Date.now(), gateAcc:{}, code:rs ? rs.code : '', results:{}, subs:{}, lastSub, done:false, pausedAt:0, pausedTotal:0, tab:'question', console:[], reached:rs ? rs.reached : 0, chats:{}, resumedFrom:rs ? rs.from : null, typing:{}, lastEditAt:0, lastSpokeAt:0, nudged:{}, lastNudgeAt:0, lastStuckCheckAt:0, lastStuckCode:'', voice:false};
+    S.attempt = {qid, id:gym ? gym.id : tsId(), gym:gym || null, startedAt:Date.now(), gi:rs ? rs.gi : 0, gateStartedAt:Date.now(), gateAcc:{}, code:rs ? rs.code : '', results:{}, subs:{}, lastSub, done:false, pausedAt:0, pausedTotal:0, tab:'question', console:[], reached:rs ? rs.reached : 0, chats:{}, resumedFrom:rs ? rs.from : null, typing:{}, lastEditAt:0, lastSpokeAt:0, nudged:{}, lastNudgeAt:0, lastStuckCheckAt:0, lastStuckCode:'', voice:false};
     }
     if (rs) toast(`Resumed with your code from ${fmtDateTime(rs.from.replace(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/, '$1-$2-$3T$4:$5:$6Z'))}; starting at part ${S.attempt.gi + 1}.`);
     if (q.lang === 'python') Runner.warm(m => { const el = $('#pyStatus'); if (el) el.textContent = m; });
@@ -672,13 +682,13 @@ async function renderTry(qid){
   const gatesNav = h('div',{class:'gates', role:'tablist'}, q.gates.map((g,i) => { const locked = i > a.reached; return h('button',{class:'gate' + (locked ? ' locked' : ''), role:'tab', disabled:locked, 'aria-current':i === a.gi ? 'true' : null, title:locked ? `Part ${i+1} is revealed when you submit part ${i}` : g.title, onclick:() => switchGate(q, i)}, h('span',{class:'pip ' + gateStatus(a.subs[g.id])}), locked ? `${i+1} 🔒` : `${i+1}`); }));
   const hasNext = a.gi < q.gates.length - 1, submittedHere = !!a.subs[gate.id];
   const topbar = h('div',{class:'padbar'},
-    h('a',{class:'btn quiet small', href:'#/q/' + qid, text:'← ' + (q.title.length > 38 ? q.title.slice(0,36) + '…' : q.title)}),
+    h('a',{class:'btn quiet small', href:a.gym ? '#/gym/' + a.gym.id : '#/q/' + qid, text:'← ' + (a.gym ? `Gym ${a.gym.n + 1}/${(S.gyms.find(x => x.id === a.gym.id) || {drillIds:[]}).drillIds.length}: ` : '') + (q.title.length > 38 ? q.title.slice(0,36) + '…' : q.title)}),
     gatesNav,
     h('span',{class:'spacer'}),
     h('div',{class:'timers'}, h('div',null, tGate, h('small',{text:`part ${a.gi+1}${gate.minutes ? ' / ' + gate.minutes + ' min' : ''}`})), h('div',null, tAll, h('small',{text:'total'}))),
     h('button',{class:'btn quiet small', id:'pauseBtn', text:a.pausedAt ? 'Resume' : 'Pause', onclick:() => { if (a.pausedAt){ a.pausedTotal += Date.now() - a.pausedAt; a.pausedAt = 0; } else a.pausedAt = Date.now(); $('#pauseBtn').textContent = a.pausedAt ? 'Resume' : 'Pause'; tick(); }}),
     hasNext && submittedHere && h('button',{class:'btn small', text:'Next part →', title:'Move on like an interviewer would, even if tests still fail', onclick:() => advanceGate(q)}),
-    h('button',{class:'btn quiet small', text:'Finish', onclick:() => finishAttempt(q)}));
+    a.gym ? (submittedHere ? h('button',{class:'btn primary small', text:gymIsLast(a.gym) ? 'Finish session →' : 'Next drill →', onclick:() => gymAdvance(q)}) : h('button',{class:'btn quiet small', text:'Leave session', onclick:() => finishAttempt(q)})) : h('button',{class:'btn quiet small', text:'Finish', onclick:() => finishAttempt(q)}));
   const chatN = (a.chats[gate.id] || []).filter(m => m.role === 'you' || m.kind === 'nudge').length;
   const tabs = h('div',{class:'ptabs'},
     h('button',{class:'ptab', 'aria-current':a.tab === 'question' ? 'true' : null, text:'Question', onclick:() => { a.tab = 'question'; render(); }}),
@@ -855,7 +865,149 @@ async function submitCurrent(q){
 function finishAttempt(q){
   const a = S.attempt; const n = Object.keys(a.subs).length;
   if (!n && !confirm('Nothing was submitted in this attempt. Leave anyway?')) return;
-  a.done = true; Draft.clear(); S.attempt = null; location.hash = '#/q/' + q.id;
+  a.done = true; Draft.clear(); S.attempt = null; location.hash = a.gym ? '#/gym/' + a.gym.id : '#/q/' + q.id;
+}
+
+/* ---------- gym ---------- */
+function gymSubs(g){ return S.subs.filter(s => s.attemptId === g.id); }
+function gymStationSub(g, n){ const subs = gymSubs(g).filter(s => s.questionId === g.drillIds[n]); return subs[subs.length - 1] || null; }
+function gymStation(g){ for (let i = 0; i < g.drillIds.length; i++) if (!gymStationSub(g, i)) return g.finishedAt ? -1 : i; return -1; }
+function gymIsLast(ctx){ const g = S.gyms.find(x => x.id === ctx.id); return !g || ctx.n >= g.drillIds.length - 1; }
+async function gymAdvance(q){
+  const a = S.attempt, g = S.gyms.find(x => x.id === a.gym.id); if (!g) return;
+  a.done = true; Draft.clear(); S.attempt = null;
+  if (a.gym.n >= g.drillIds.length - 1){ g.finishedAt = new Date().toISOString(); try { await API.putGym(g); } catch(e){ toast(e.message); } location.hash = '#/gym/' + g.id; }
+  else { const target = '#/gym/' + g.id + '/go'; if (location.hash === target) render(); else location.hash = target; }
+}
+function gymStats(g){
+  const subs = g.drillIds.map((id, i) => ({q:S.questions.get(id), s:gymStationSub(g, i)}));
+  const done = subs.filter(x => x.s), passed = done.filter(x => gateStatus(x.s) === 'pass');
+  const time = done.reduce((t, x) => t + (x.s.gateSec || 0), 0);
+  const ratios = done.map(x => x.q && x.q.gates[0].minutes ? (x.s.gateSec || 0) / (x.q.gates[0].minutes * 60) : null).filter(v => v != null);
+  const fbs = done.map(x => x.s.feedback).filter(Boolean);
+  const dims = Object.fromEntries(DIMS.map(([k]) => [k, fbs.length ? avg(fbs.map(f => f.scores[k] || f.overall)) : null]));
+  return {subs, done, passed, time, budgetRatio:ratios.length ? median(ratios.map(r => Math.round(r*100))) : null, cpm:done.some(x => x.s.cpm) ? median(done.filter(x => x.s.cpm).map(x => x.s.cpm)) : null, lines:done.some(x => x.s.lines) ? Math.round(avg(done.filter(x => x.s.lines).map(x => x.s.lines))) : null, quality:fbs.length ? avg(fbs.map(f => f.overall)) : null, fbs, dims, nudges:done.reduce((n, x) => n + ((x.s.nudges || []).filter(r => r === 'stuck' || r === 'idle').length), 0)};
+}
+function gymFocusOptions(){
+  const drills = [...S.questions.values()].filter(q => q.kind === 'drill');
+  const fulls = [...S.questions.values()].filter(q => q.kind !== 'drill');
+  const have = new Map(); for (const d of drills) for (const k of (d.skills || '').split(/[;,]/).map(x => x.trim()).filter(Boolean)) have.set(k, (have.get(k) || 0) + 1);
+  const opts = [['mixed', 'Mixed (unattempted drills, hardest gaps first)']];
+  for (const [k,[n]] of Object.entries(SKILLS)) opts.push(['skill:' + k, n + (have.has(n) ? ` (${have.get(n)} drill${have.get(n)===1?'':'s'})` : '')]);
+  for (const tp of [...new Set([...fulls.map(q => q.topic), ...drills.map(q => q.topic)].filter(Boolean))]) opts.push(['topic:' + tp, tp]);
+  return opts;
+}
+function drillMatches(q, focus){
+  if (focus === 'mixed') return true;
+  if (focus.startsWith('topic:')) return (q.topic || '') === focus.slice(6);
+  const name = SKILLS[focus.slice(6)] ? SKILLS[focus.slice(6)][0].toLowerCase() : focus.slice(6).toLowerCase();
+  return (q.skills || '').toLowerCase().includes(name) || (q.title || '').toLowerCase().includes(name);
+}
+function renderGym(gid){
+  if (gid){ const g = S.gyms.find(x => x.id === gid); if (!g){ app.append(h('p',{class:'none', text:'That session is not on record.'})); return; } return renderGymSession(g); }
+  const drills = [...S.questions.values()].filter(q => q.kind === 'drill');
+  app.append(h('div',{class:'page-head'}, h('div',null, h('h2',{text:'Gym'}), h('p',{text:'A set of drills in a row, one unlocking the next, against the clock. Each session gets its own debrief and feeds the drill analytics.'})), h('a',{class:'btn', href:'#/analytics#drills', text:'Drill analytics'})));
+  const opts = gymFocusOptions();
+  const start = h('details',{class:'draftbox', open:true}, h('summary',null, h('strong',{text:'Start a session'})),
+    h('div',{class:'row', style:'margin-top:8px'},
+      h('label',{class:'field', style:'flex:1;min-width:220px'}, h('span',{text:'Focus'}), h('select',{id:'gyFocus'}, opts.map(([v,l]) => h('option',{value:v, text:l})))),
+      h('label',{class:'field', style:'width:110px'}, h('span',{text:'Drills'}), h('select',{id:'gyCount'}, [3,4,5,6].map(n => h('option',{value:String(n), text:String(n), selected:n === 4})))),
+      h('label',{class:'field', style:'width:120px'}, h('span',{text:'Minutes each'}), h('input',{type:'number', id:'gyMin', value:'12', min:'5', max:'30'}))),
+    h('p',{class:'hist', style:'margin-top:8px', text:'Unattempted drills that match the focus are used first; if there are not enough, Claude writes the rest (one to three minutes each) before the session starts.'}),
+    h('div',{class:'row', style:'margin-top:8px'}, h('button',{class:'btn primary', id:'gyStart', text:'Start', onclick:e => startGym(e.target)}), h('span',{class:'hist', id:'gyNote'})));
+  app.append(start);
+  const sessions = S.gyms.slice().reverse();
+  const sec = h('div',{class:'section'}, h('h3',{text:'Sessions'}));
+  if (!sessions.length) sec.append(h('p',{class:'none', text:'No sessions yet.'}));
+  else sec.append(h('table',null, h('thead',null, h('tr',null, h('th',{text:'When'}), h('th',{text:'Focus'}), h('th',{class:'num', text:'Drills'}), h('th',{class:'num', text:'Passed'}), h('th',{class:'num', text:'Time'}), h('th',{class:'num', text:'Quality'}), h('th',{text:''}))),
+    h('tbody',null, sessions.map(g => { const st = gymStats(g); const open = gymStation(g) >= 0; return h('tr',null, h('td',{text:fmtDateTime(g.startedAt)}), h('td',{text:g.focusLabel || g.focus}), h('td',{class:'num', text:`${st.done.length}/${g.drillIds.length}`}), h('td',{class:'num ' + (st.passed.length === g.drillIds.length ? 'ok' : ''), text:String(st.passed.length)}), h('td',{class:'num', text:fmtSec(st.time)}), h('td',{class:'num', text:st.quality != null ? st.quality.toFixed(1) : '–'}), h('td',null, h('a',{class:'btn small' + (open ? ' primary' : ''), href:'#/gym/' + g.id, text:open ? 'Continue' : 'Debrief'}))); }))));
+  app.append(sec);
+  if (drills.length) app.append(h('p',{class:'hist', style:'margin-top:18px'}, `${drills.length} drill${drills.length===1?'':'s'} in the library. `, h('a',{href:'#/drills', text:'Manage drills'})));
+}
+async function startGym(btn){
+  const focus = $('#gyFocus').value, count = Number($('#gyCount').value), minutes = Number($('#gyMin').value), note = $('#gyNote');
+  const focusLabel = $('#gyFocus').selectedOptions[0].textContent.replace(/ \(.*\)$/, '');
+  const attempted = new Set(S.subs.map(s => s.questionId));
+  const drills = [...S.questions.values()].filter(q => q.kind === 'drill' && drillMatches(q, focus));
+  const gapCount = new Map(); for (const s of S.subs) if (s.feedback) for (const g of s.feedback.gaps || []) gapCount.set(g, (gapCount.get(g) || 0) + 1);
+  const score = q => (attempted.has(q.id) ? 0 : 100) + [...gapCount.entries()].reduce((x,[g,n]) => x + ((q.skills || '').toLowerCase().includes(SKILLS[g] ? SKILLS[g][0].toLowerCase() : g) ? n : 0), 0) + Math.random();
+  let pick = drills.sort((a,b) => score(b) - score(a)).slice(0, count);
+  btn.disabled = true;
+  if (pick.length < count){
+    if (!(S.health && S.health.hasKey)){ note.textContent = `Only ${pick.length} matching drill${pick.length===1?'':'s'}; Claude is needed to write more (see Settings).`; if (!pick.length){ btn.disabled = false; return; } }
+    else {
+      const need = count - pick.length; note.textContent = `Claude is writing ${need} drill${need===1?'':'s'} (one to three minutes each)…`;
+      const fulls = [...S.questions.values()].filter(q => q.kind !== 'drill');
+      const focusText = focus === 'mixed' ? 'a mix: ' + ([...gapCount.entries()].sort((a,b) => b[1]-a[1]).slice(0,2).map(([g]) => (SKILLS[g] || [g])[0]).join(', ') || 'core data structures and simulation') : focus.startsWith('skill:') ? SKILLS[focus.slice(6)][0] + ': ' + SKILLS[focus.slice(6)][1] : focus.slice(6);
+      try { const r = await API.call('POST', '/api/drills/generate', {focus:focusText, count:need, minutes, examples:fulls.slice(0,2).map(q => q.id)}); await loadIndex(); pick = pick.map(q => S.questions.get(q.id) || q).concat(r.made.map(m => S.questions.get(m.question.id)).filter(Boolean)).slice(0, count); }
+      catch(err){ note.textContent = 'Could not write drills: ' + err.message; if (!pick.length){ btn.disabled = false; return; } }
+    }
+  }
+  const g = {id:'gym-' + tsId(), focus, focusLabel, minutes, startedAt:new Date().toISOString(), finishedAt:null, drillIds:pick.map(q => q.id)};
+  try { await API.putGym(g); } catch(e){ toast('Could not save the session: ' + e.message); btn.disabled = false; return; }
+  S.gyms.push(g); location.hash = '#/gym/' + g.id + '/go';
+}
+function renderGymSession(g){
+  const st = gymStats(g), cur = gymStation(g), open = cur >= 0;
+  app.append(h('div',{class:'page-head'}, h('div',null, h('a',{class:'btn quiet small', href:'#/gym', text:'All sessions'}), h('h2',{style:'margin-top:8px', text:`Gym: ${g.focusLabel || g.focus}`}), h('p',{text:`${fmtDateTime(g.startedAt)} · ${g.drillIds.length} drills, ${g.minutes || '?'} min each` + (g.finishedAt ? ' · finished' : '')})),
+    h('div',{class:'row'}, open && h('a',{class:'btn primary', href:'#/gym/' + g.id + '/go', text:cur === 0 && !st.done.length ? 'Start drill 1' : `Continue with drill ${cur + 1}`}), open && st.done.length > 0 && h('button',{class:'btn', text:'End session here', onclick:async () => { g.finishedAt = new Date().toISOString(); try { await API.putGym(g); } catch(e){ toast(e.message); } render(); }}))));
+  // track
+  const track = h('div',{class:'track'});
+  g.drillIds.forEach((id, i) => { const q = S.questions.get(id), s = st.subs[i].s; const state = s ? gateStatus(s) : i === cur ? 'current' : 'locked';
+    track.append(h('div',{class:'station ' + state}, h('div',{class:'st-n', text:String(i + 1)}), h('div',{class:'st-body'}, h('b',{text:state === 'locked' ? 'Locked' : q ? q.title : id}), h('span',{class:'hist', text:s ? `${gateStatus(s) === 'pass' ? 'passed' : 'failed'} · ${fmtSec(s.gateSec)}${q && q.gates[0].minutes ? ' of ' + q.gates[0].minutes + ' min' : ''}${s.feedback ? ' · ' + s.feedback.overall + '/5' : ''}` : state === 'current' ? 'up next' : `unlocks after drill ${i}`})),
+      s && q && h('button',{class:'link', text:'Open', onclick:() => openSubmission(q, q.gates[0], 0, s)}))); });
+  app.append(track);
+  if (!st.done.length) return;
+  // debrief
+  const prev = S.gyms.filter(x => x.id !== g.id && x.startedAt < g.startedAt && gymStats(x).fbs.length);
+  const prevStats = prev.slice(-3).map(gymStats);
+  const prevDim = prevStats.length ? Object.fromEntries(DIMS.map(([k]) => [k, avg(prevStats.map(p => p.dims[k]).filter(v => v != null))])) : null;
+  const prevPass = prevStats.length ? avg(prevStats.map(p => p.passed.length / Math.max(1, p.done.length))) : null;
+  const tiles = h('div',{class:'tiles', style:'margin-top:26px'},
+    h('div',{class:'tile'}, h('b',{text:`${st.passed.length}/${st.done.length}`}), h('span',{text:'drills passed' + (g.drillIds.length > st.done.length ? ` (${g.drillIds.length - st.done.length} not reached)` : '')})),
+    h('div',{class:'tile'}, h('b',{text:fmtSec(st.time)}), h('span',{text:'total time on the clock'})),
+    h('div',{class:'tile'}, h('b',{text:st.budgetRatio != null ? st.budgetRatio + '%' : '–'}), h('span',{text:'of budget used, median drill'})),
+    h('div',{class:'tile'}, h('b',{text:st.cpm != null ? String(st.cpm) : '–'}), h('span',{text:'chars per active minute'})),
+    h('div',{class:'tile'}, h('b',{text:st.lines != null ? String(st.lines) : '–'}), h('span',{text:'lines per drill'})),
+    h('div',{class:'tile'}, h('b',{text:st.quality != null ? st.quality.toFixed(1) : '–'}), h('span',{text:st.fbs.length ? `review quality, ${st.fbs.length} of ${st.done.length} reviewed` : 'no reviews yet'})));
+  app.append(tiles);
+  const pending = st.done.filter(x => !x.s.feedback && (x.s.status === 'grading' || x.s.status === 'reviewing')).length;
+  if (pending) app.append(h('div',{class:'thinking', style:'margin-bottom:16px'}, h('span',{class:'dot'}), `${pending} review${pending===1?'':'s'} still running; the debrief fills in when they land.`));
+  const grid = h('div',{class:'ins'});
+  // improvements
+  const imp = [];
+  if (prevPass != null){ const now = st.passed.length / st.done.length; if (now - prevPass >= 0.15) imp.push(`Pass rate ${Math.round(now*100)}%, up from ${Math.round(prevPass*100)}% over the last ${prevStats.length} session${prevStats.length===1?'':'s'}.`); }
+  if (prevDim) for (const [k,label] of DIMS){ const d = st.dims[k]; if (d != null && prevDim[k] != null && d - prevDim[k] >= 0.5) imp.push(`${label} ${d.toFixed(1)}, up ${(d - prevDim[k]).toFixed(1)}.`); }
+  const prevRatio = prevStats.map(p => p.budgetRatio).filter(v => v != null);
+  if (st.budgetRatio != null && prevRatio.length && median(prevRatio) - st.budgetRatio >= 15) imp.push(`Faster: ${st.budgetRatio}% of budget against ${median(prevRatio)}% before.`);
+  const prevGaps = new Set(prevStats.flatMap(p => p.fbs.flatMap(f => f.gaps || []))), nowGaps = new Set(st.fbs.flatMap(f => f.gaps || []));
+  for (const gp of prevGaps) if (!nowGaps.has(gp) && SKILLS[gp]) imp.push(`${SKILLS[gp][0]} was flagged in earlier sessions and not this time.`);
+  const strengths = new Map(); for (const f of st.fbs) for (const s of f.strengths || []) strengths.set(s, (strengths.get(s) || 0) + 1);
+  for (const [s, n] of [...strengths.entries()].sort((a,b) => b[1]-a[1]).slice(0, 2)) imp.push(n > 1 ? `${s} (noted in ${n} reviews).` : s + '.');
+  if (st.nudges === 0 && st.done.length >= 2 && st.fbs.length) imp.push('No stuck or idle nudges were needed.');
+  const isec = h('section',null, h('h3',{text:'Key improvements'}), h('p',{class:'sub', text:prevStats.length ? `Against your last ${prevStats.length} session${prevStats.length===1?'':'s'}.` : 'First session with reviews; later sessions are compared against this one.'}));
+  isec.append(imp.length ? h('ul',{class:'debrief'}, imp.slice(0, 6).map(x => h('li',{text:x}))) : h('p',{class:'none', text:st.fbs.length ? 'Nothing moved by a clear margin yet.' : 'Waiting on reviews.'}));
+  grid.append(isec);
+  // progress needed
+  const need = [];
+  const failed = st.done.filter(x => gateStatus(x.s) !== 'pass');
+  if (failed.length) need.push({text:`${failed.length} of ${st.done.length} did not pass: ${failed.map(x => x.q ? x.q.title : x.s.questionId).join(', ')}. Redo each from your last code until it is clean.`, focus:null});
+  const over = st.done.filter(x => x.q && x.q.gates[0].minutes && (x.s.gateSec || 0) > x.q.gates[0].minutes * 60 * 1.1);
+  if (over.length) need.push({text:`Over budget on ${over.length}: ${over.map(x => `${x.q.title} (${Math.round((x.s.gateSec || 0) / (x.q.gates[0].minutes * 60) * 100)}%)`).join(', ')}. Decide the approach out loud in the first minute and write the obvious version first.`, focus:null});
+  const low = DIMS.map(([k,label]) => ({k, label, v:st.dims[k]})).filter(x => x.v != null && x.v < 3.5).sort((a,b) => a.v - b.v).slice(0, 2);
+  for (const x of low) need.push({text:`${x.label} averaged ${x.v.toFixed(1)} of 5 this session.`, focus:DIM_SKILL[x.k]});
+  const gapN = new Map(); for (const f of st.fbs) for (const gp of f.gaps || []) gapN.set(gp, (gapN.get(gp) || 0) + 1);
+  for (const [gp, n] of [...gapN.entries()].sort((a,b) => b[1]-a[1]).slice(0, 2)) if (SKILLS[gp]) need.push({text:`${SKILLS[gp][0]} flagged in ${n} of ${st.fbs.length} reviews: ${SKILLS[gp][1]}.`, focus:gp});
+  if (st.nudges) need.push({text:`The interviewer had to nudge ${st.nudges} time${st.nudges===1?'':'s'} (stuck or idle). Narrate before you stall; walk one example by hand when stuck.`, focus:'independence'});
+  const nsec = h('section',null, h('h3',{text:'Progress needed'}), h('p',{class:'sub', text:'What this session says to work on next; each line that maps to a skill has a drill button.'}));
+  nsec.append(need.length ? h('ul',{class:'debrief'}, need.slice(0, 6).map(x => h('li',null, x.text, ' ', x.focus && S.health && S.health.hasKey && drillBtn(x.focus, 'Drill')))) : h('p',{class:'none', text:st.fbs.length ? 'Clean session: everything passed inside budget with no low scores.' : 'Waiting on reviews.'}));
+  grid.append(nsec);
+  if (st.fbs.length) grid.append(h('section',null, h('h3',{text:'Scores this session'}), barChart(DIMS.map(([k,label]) => ({name:label, v:st.dims[k] || 0, delta:prevDim && prevDim[k] != null ? st.dims[k] - prevDim[k] : null, tip:`${label}: ${(st.dims[k] || 0).toFixed(1)}`})), {label:'Review dimensions', colorOf:it => it.v < 2.5 ? 'var(--bad)' : it.v < 3.5 ? 'var(--warn)' : 'var(--good)'})));
+  const tbl = h('section',{class:'wide'}, h('h3',{text:'Drill by drill'}), h('table',null, h('thead',null, h('tr',null, h('th',{text:'#'}), h('th',{text:'Drill'}), h('th',{class:'num', text:'Time'}), h('th',{class:'num', text:'Budget'}), h('th',{class:'num', text:'Tests'}), h('th',{class:'num', text:'Lines'}), h('th',{class:'num', text:'cpm'}), h('th',{class:'num', text:'Quality'}), h('th',{text:'Gaps'}))),
+    h('tbody',null, st.subs.map((x, i) => x.s && h('tr',null, h('td',{text:String(i + 1)}), h('td',null, h('a',{href:'#/q/' + (x.q ? x.q.id : ''), text:x.q ? x.q.title : x.s.questionId})), h('td',{class:'num', text:fmtSec(x.s.gateSec)}), h('td',{class:'num', text:x.q && x.q.gates[0].minutes ? Math.round((x.s.gateSec || 0) / (x.q.gates[0].minutes * 60) * 100) + '%' : '–'}), h('td',{class:'num ' + (gateStatus(x.s) === 'pass' ? 'ok' : 'fail'), text:x.s.total ? `${x.s.passed}/${x.s.total}` : '–'}), h('td',{class:'num', text:x.s.lines ? String(x.s.lines) : '–'}), h('td',{class:'num', text:x.s.cpm ? String(x.s.cpm) : '–'}), h('td',{class:'num', text:x.s.feedback ? x.s.feedback.overall + '/5' : x.s.status === 'grading' || x.s.status === 'reviewing' ? 'pending' : '–'}), h('td',{text:x.s.feedback ? x.s.feedback.gaps.map(k => (SKILLS[k] || [k])[0]).join(', ') : ''}))))));
+  grid.append(tbl);
+  app.append(grid);
+  if (pending){ const ids = st.done.filter(x => !x.s.feedback && (x.s.status === 'grading' || x.s.status === 'reviewing')).map(x => x.s.id); for (const id of ids) waitForEval(id, () => { if (S.view === 'gym') render(); }); }
 }
 
 /* ---------- edit / new ---------- */
@@ -1096,6 +1248,39 @@ function renderAnalytics(qidFilter){
     h('div',{class:'gap-items'}, S.health && S.health.hasKey && drillBtn(g.skill), g.items.slice(-4).map(it => h('div',null, h('a',{href:'#/q/' + (it.q ? it.q.id : ''), text:(it.q ? it.q.title : it.s.questionId) + (it.gate ? ', ' + it.gate.title : '')}), h('div',{text:it.note}))))));
   grid.append(gsec);
 
+  // ---- drills and gym
+  if (!qidFilter){
+    const dsubs = subs.filter(s => (S.questions.get(s.questionId) || {}).kind === 'drill');
+    const drsec = h('section',{class:'wide', id:'drills'}, h('h3',{text:'Drills and gym'}), h('p',{class:'sub', text:'Every drill submission, in or out of a gym session. Pass rate and pace per skill; quality and pass rate per gym session.'}));
+    if (!dsubs.length) drsec.append(h('p',{class:'none', text:'No drills done yet.'}), h('div',{class:'row'}, h('a',{class:'btn small', href:'#/gym', text:'Open the gym'})));
+    else {
+      const dp = dsubs.filter(s => gateStatus(s) === 'pass').length;
+      const dr = dsubs.map(s => { const q = S.questions.get(s.questionId); return q && q.gates[0].minutes ? (s.gateSec || 0) / (q.gates[0].minutes * 60) : null; }).filter(v => v != null);
+      const dfb = dsubs.filter(s => s.feedback);
+      drsec.append(h('div',{class:'tiles'},
+        h('div',{class:'tile'}, h('b',{text:String(dsubs.length)}), h('span',{text:`drill submission${dsubs.length===1?'':'s'}, ${S.gyms.length} gym session${S.gyms.length===1?'':'s'}`})),
+        h('div',{class:'tile'}, h('b',{text:Math.round(dp / dsubs.length * 100) + '%'}), h('span',{text:'drills passed'})),
+        h('div',{class:'tile'}, h('b',{text:dr.length ? Math.round(median(dr.map(r => r*100))) + '%' : '–'}), h('span',{text:'of budget used, median'})),
+        h('div',{class:'tile'}, h('b',{text:dsubs.some(s => s.cpm) ? String(median(dsubs.filter(s => s.cpm).map(s => s.cpm))) : '–'}), h('span',{text:'chars per active minute, drills'})),
+        h('div',{class:'tile'}, h('b',{text:dfb.length ? avg(dfb.map(s => s.feedback.overall)).toFixed(1) : '–'}), h('span',{text:'drill review quality'}))));
+      const bySkill = new Map();
+      for (const s of dsubs){ const q = S.questions.get(s.questionId); const keys = (q && q.skills ? q.skills.split(/[;,]/).map(x => x.trim()).filter(Boolean) : [q && q.topic || 'untagged']); for (const k of keys){ let x = bySkill.get(k); if (!x){ x = {k, n:0, pass:0, ratios:[]}; bySkill.set(k, x); } x.n++; if (gateStatus(s) === 'pass') x.pass++; if (q && q.gates[0].minutes) x.ratios.push((s.gateSec || 0) / (q.gates[0].minutes * 60)); } }
+      const two = h('div',{class:'ins', style:'margin-top:8px'});
+      const sk = h('section',null, h('h4',{text:'By skill'}), h('p',{class:'sub', text:'Bar: share passed. Tick at 100%.'}));
+      for (const x of [...bySkill.values()].sort((a,b) => a.pass/a.n - b.pass/b.n || b.n - a.n).slice(0, 10)) sk.append(h('div',{class:'hbar'}, h('div',null, x.k, h('span',{class:'n', text:`${x.n} drill${x.n===1?'':'s'}` + (x.ratios.length ? `, ${Math.round(median(x.ratios.map(r => r*100)))}% of budget` : '')})), bar(x.pass / x.n, x.pass / x.n >= .8 ? 'good' : x.pass / x.n >= .5 ? 'warn' : 'bad'), h('span',{class:'val', text:`${x.pass}/${x.n}`})));
+      two.append(sk);
+      const gs = S.gyms.map(g => ({g, st:gymStats(g)})).filter(x => x.st.done.length);
+      const gsec2 = h('section',null, h('h4',{text:'Gym sessions'}), h('p',{class:'sub', text:'Share of drills passed per session, in order; hover for the focus.'}));
+      if (gs.length >= 2) gsec2.append(lineChart(gs.map(x => ({x:fmtDate(x.g.startedAt), y:x.st.passed.length / x.st.done.length * 100, tip:`${x.g.focusLabel || x.g.focus}: ${x.st.passed.length}/${x.st.done.length} passed, ${fmtSec(x.st.time)}` + (x.st.quality != null ? `, quality ${x.st.quality.toFixed(1)}` : '')})), {max:100, fmt:v => Math.round(v) + '%', label:'Drills passed per gym session'}));
+      if (gs.filter(x => x.st.quality != null).length >= 2) gsec2.append(h('p',{class:'sub', style:'margin-top:10px', text:'Review quality per session.'}), lineChart(gs.filter(x => x.st.quality != null).map(x => ({x:fmtDate(x.g.startedAt), y:x.st.quality, tip:`${x.g.focusLabel || x.g.focus}: ${x.st.quality.toFixed(1)} of 5`})), {label:'Quality per gym session'}));
+      if (gs.length < 2) gsec2.append(h('p',{class:'none', text:'Needs two sessions.'}));
+      gsec2.append(h('div',{class:'row', style:'margin-top:8px'}, h('a',{class:'btn small', href:'#/gym', text:'Open the gym'})));
+      two.append(gsec2);
+      drsec.append(two);
+    }
+    grid.append(drsec);
+  }
+
   // ---- table
   const tsec2 = h('section',{class:'wide'}, h('h3',{text:'All submissions'}));
   tsec2.append(h('table',null, h('thead',null, h('tr',null, h('th',{text:'When'}), h('th',{text:'Question'}), h('th',{text:'Part'}), h('th',{class:'num', text:'Part time'}), h('th',{class:'num', text:'Tests'}), h('th',{class:'num', text:'Lines'}), h('th',{class:'num', text:'cpm'}), h('th',{class:'num', text:'Asked'}), h('th',{class:'num', text:'Quality'}), h('th',{text:'Gaps'}))),
@@ -1110,7 +1295,7 @@ function renderAnalytics(qidFilter){
 function renderDrills(){
   const drills = [...S.questions.values()].filter(q => q.kind === 'drill').sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
   const fulls = [...S.questions.values()].filter(q => q.kind !== 'drill');
-  app.append(h('div',{class:'page-head'}, h('div',null, h('h2',{text:'Drills'}), h('p',{text:'Short single-part exercises, 10–15 minutes each, for when you want reps rather than a full round. Claude writes them around a skill or topic, in the style of your own questions, and verifies the tests before saving.'}))));
+  app.append(h('div',{class:'page-head'}, h('div',null, h('h2',{text:'Drills'}), h('p',{text:'Short single-part exercises, 10–15 minutes each, for when you want reps rather than a full round. Claude writes them around a skill or topic, in the style of your own questions, and verifies the tests before saving.'})), h('div',{class:'row'}, h('a',{class:'btn primary', href:'#/gym', text:'Go to the gym'}), h('a',{class:'btn', href:'#/analytics#drills', text:'Drill analytics'}))));
   const focusOpts = [...Object.entries(SKILLS).map(([k,[n]]) => ['skill:' + k, n + ' (skill)']), ...[...new Set(fulls.map(q => q.topic).filter(Boolean))].map(t => ['topic:' + t, t + ' (topic)'])];
   const pre = S.drillFocus ? 'skill:' + S.drillFocus : focusOpts[0] && focusOpts[0][0]; S.drillFocus = null;
   const out = h('div');

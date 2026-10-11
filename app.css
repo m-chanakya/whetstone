@@ -411,3 +411,15 @@ details.draftbox .row{margin-top:8px}
 .msg.say{opacity:.85}
 .msg.say .who{font-style:italic}
 .resume-box{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--pen-soft);border-radius:12px;padding:12px 18px;margin:0 0 24px}
+/* gym */
+.track{display:flex;flex-direction:column;gap:10px;margin-top:8px}
+.station{display:grid;grid-template-columns:40px minmax(0,1fr) auto;gap:14px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 16px}
+.station .st-n{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;font:700 1rem var(--font-d);background:var(--sunk);color:var(--muted)}
+.station.current{border-color:var(--pen);box-shadow:0 0 0 3px var(--pen-soft)}
+.station.current .st-n{background:var(--pen);color:var(--pen-ink)}
+.station.pass .st-n{background:var(--good);color:#fff}
+.station.fail .st-n,.station.part .st-n{background:var(--bad);color:#fff}
+.station.locked{opacity:.55}
+.station .st-body{display:flex;flex-direction:column;gap:2px;min-width:0}
+.debrief{margin:0;padding-left:1.1em;display:flex;flex-direction:column;gap:8px;max-width:72ch}
+.debrief .btn{vertical-align:middle;margin-left:4px}
