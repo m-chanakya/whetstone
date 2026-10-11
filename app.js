@@ -26,7 +26,7 @@ const VERDICT = ['','Not there yet','Shaky','Borderline','Solid','Strong'];
 const LANGS = {python:'Python', javascript:'JavaScript'};
 
 /* ---------- state ---------- */
-const S = { loading:true, index:null, questions:new Map(), subs:[], view:null, attempt:null, busy:null, dirty:false, plan:null, gyms:[] };
+const S = { loading:true, index:null, questions:new Map(), subs:[], view:null, attempt:null, busy:null, dirty:false, plan:null, gyms:[], trainerChat:[] };
 const DEFAULT_PLAN = {company:'OpenAI', stages:[{name:'Phone screen', date:'2026-10-22T09:00', rounds:['Coding','Architecture'], note:'both rounds must pass'}, {name:'Onsite', date:'', rounds:['Coding','Architecture','Previous design','Behavioral'], note:'unlocked by the phone screen; dates TBD'}]};
 const $ = s => document.querySelector(s);
 const app = $('#app');
@@ -142,6 +142,8 @@ const API = {
   putPlan(p){ return this.call('POST', '/api/plan', p); },
   gyms(){ return this.call('GET', '/api/gym'); },
   putGym(s){ return this.call('POST', '/api/gym', s); },
+  trainer(body){ return this.call('POST', '/api/trainer', body); },
+  trainerChat(){ return this.call('GET', '/api/trainer'); },
 };
 
 /* ---------- data ---------- */
@@ -149,7 +151,7 @@ async function loadIndex(){
   S.health = null;
   try { S.health = await API.health(); } catch(e){ S.health = null; }
   let idx = {questions:[], submissions:[]};
-  if (S.health){ try { idx = await API.index(); } catch(e){ toast('The backend answered but the index failed: ' + e.message); } try { S.plan = await API.plan(); } catch(e){ S.plan = null; } try { S.gyms = (await API.gyms()).sessions || []; } catch(e){ S.gyms = []; } }
+  if (S.health){ try { idx = await API.index(); } catch(e){ toast('The backend answered but the index failed: ' + e.message); } try { S.plan = await API.plan(); } catch(e){ S.plan = null; } try { S.gyms = (await API.gyms()).sessions || []; } catch(e){ S.gyms = []; } try { S.trainerChat = (await API.trainerChat()).chat || []; } catch(e){ S.trainerChat = []; } }
   S.index = idx;
   S.questions = new Map(idx.questions.map(q => [q.id, q]));
   S.subs = idx.submissions.slice().sort((a,b) => a.at.localeCompare(b.at));
@@ -703,7 +705,8 @@ async function renderTry(qid, gym){
   const tabs = h('div',{class:'ptabs'},
     h('button',{class:'ptab', 'aria-current':a.tab === 'question' ? 'true' : null, text:'Question', onclick:() => { a.tab = 'question'; render(); }}),
     h('button',{class:'ptab', 'aria-current':a.tab === 'ask' ? 'true' : null, onclick:() => { a.tab = 'ask'; render(); }}, 'Interviewer', h('span',{class:'count', id:'askCount', text:chatN ? String(chatN) : '', hidden:!chatN})),
-    h('button',{class:'ptab', 'aria-current':a.tab === 'feedback' ? 'true' : null, onclick:() => { a.tab = 'feedback'; render(); }}, 'Feedback', Object.keys(a.subs).length ? h('span',{class:'count', text:String(Object.keys(a.subs).length)}) : null));
+    h('button',{class:'ptab', 'aria-current':a.tab === 'feedback' ? 'true' : null, onclick:() => { a.tab = 'feedback'; render(); }}, 'Feedback', Object.keys(a.subs).length ? h('span',{class:'count', text:String(Object.keys(a.subs).length)}) : null),
+    a.gym && (S.gyms.find(x => x.id === a.gym.id) || {}).trainer && h('button',{class:'ptab', 'aria-current':a.tab === 'trainer' ? 'true' : null, text:'Trainer', onclick:() => { a.tab = 'trainer'; render(); }}));
   const left = h('aside',{class:'padleft'}, tabs, h('div',{class:'padscroll', id:'padleft'}));
   const edHost = h('div',{class:'editor pad-ed'});
   const console_ = h('div',{class:'console', id:'console'});
@@ -777,6 +780,10 @@ function renderPadLeft(q){
     put(host, h('p',{class:'hist', text:gate.entry ? `Define ${gate.entry}(...) at top level; hidden tests call it when you submit. Your own tests go under if __name__ == "__main__": and Run executes them.` : 'No entry function set on this part.'}), !!gate.spec && h('p',{class:'hist', text:'Details are deliberately left out. Use the Interviewer tab (or Talk) for anything unclear; your questions count toward the grade.'}));
     if (a.gi > 0) host.append(h('details',{class:'earlier'}, h('summary',{text:'Earlier parts'}), q.gates.slice(0, a.gi).map((g,i) => h('div',null, h('h4',{text:`Part ${i+1}: ${g.title}`}), promptEl(g.prompt, 'prompt small')))));
     if (q.overview) host.append(h('details',{class:'earlier', open:a.gi === 0}, h('summary',{text:'Overview'}), promptEl(q.overview, 'prompt small')));
+  } else if (a.tab === 'trainer'){
+    const g = S.gyms.find(x => x.id === a.gym.id);
+    host.append(h('p',{class:'hist', text:'Your trainer, mid-session. Explains concepts and your earlier feedback, not the answer to this drill. After you submit, ask what the review means.'}),
+      trainerPanel({chat:g.trainerChat = g.trainerChat || [], save:saveGymChat(g), compact:true, context:() => { const s = a.subs[gate.id]; return `Drill ${a.gym.n + 1} of ${g.drillIds.length} in a gym session (${g.focusLabel || g.focus}): "${q.title}". ${s ? `Submitted: ${s.browser && s.browser.total ? s.browser.passed + '/' + s.browser.total + ' hidden tests' : 'not run'}, ${fmtSec(s.gateSec)}.` + (s.feedback ? ` Review ${s.feedback.overall}/5: ${s.feedback.summary} Issues: ${(s.feedback.issues || []).map(i => (SKILLS[i.skill] || [i.skill])[0] + ': ' + i.note + (i.fix ? ' Fix: ' + i.fix : '')).join(' | ') || 'none'}. Why the improved version is better: ${(s.feedback.whyBetter || []).join('; ') || '-'}.` : ' Review pending.') : 'NOT yet submitted: do not give the solution or the key insight for this drill.'}\nDrill prompt: ${gate.prompt}\n` + sessionContext(g); }}));
   } else if (a.tab === 'ask'){
     const chat = a.chats[gate.id] = a.chats[gate.id] || [];
     const log = h('div',{class:'chatlog'});
@@ -886,6 +893,75 @@ function finishAttempt(q){
   a.done = true; Draft.clear(); S.attempt = null; location.hash = a.gym ? '#/gym/' + a.gym.id : '#/q/' + q.id;
 }
 
+/* ---------- trainer ---------- */
+function statusDigest(){
+  const lines = [];
+  const plan = S.plan || DEFAULT_PLAN, ps = (plan.stages || []).find(s => s.date);
+  if (ps){ const d = (new Date(ps.date) - Date.now()) / 864e5; lines.push(`Interview: ${plan.company || ''} ${ps.name} (${(ps.rounds || []).join(' + ')}${ps.note ? '; ' + ps.note : ''}) in ${d >= 0 ? d.toFixed(1) + ' days' : 'the past'} (${new Date(ps.date).toDateString()}).`); }
+  const allAtts = []; for (const q of S.questions.values()) for (const a of attemptsOf(q.id)) allAtts.push({...a, q});
+  const fullAtts = allAtts.filter(a => a.q.kind !== 'drill').sort((a,b) => a.at.localeCompare(b.at));
+  const subs = S.subs.slice().sort((a,b) => a.at.localeCompare(b.at)), fbs = subs.filter(s => s.feedback).map(s => ({...s.feedback, at:s.at, sub:s}));
+  const est = hireEstimate(fullAtts, fbs);
+  lines.push(`Hire estimate (coding only): ${est.verdict}, ${est.score}/100, ${est.confidence} confidence. ${est.summary} Components: ${est.parts.filter(p => p.v != null).map(p => `${p.name} ${Math.round(p.v)}%`).join('; ')}.`);
+  lines.push(`Record: ${[...S.questions.values()].filter(q => q.kind !== 'drill').length} full questions, ${fullAtts.length} full attempts, ${subs.filter(s => (S.questions.get(s.questionId) || {}).kind === 'drill').length} drill submissions, ${S.gyms.length} gym sessions, ${fbs.length} reviews.`);
+  if (fullAtts.length){ const last = fullAtts.slice(-3); lines.push('Last full attempts: ' + last.map(a => `${a.q.title}: ${a.passed}/${a.q.gates.length} parts in ${fmtSec(a.totalSec)}${a.quality != null ? ', quality ' + a.quality.toFixed(1) : ''} (${fmtDate(a.at)})`).join('; ') + '.'); }
+  if (fbs.length){
+    const recent = fbs.slice(-5), earlier = fbs.slice(0, -5);
+    const dimAvg = list => DIMS.map(([k,label]) => `${label} ${avg(list.map(f => f.scores[k] || f.overall)).toFixed(1)}`).join(', ');
+    lines.push(`Review dimensions, last ${recent.length}: ${dimAvg(recent)}.` + (earlier.length ? ` Earlier ${earlier.length}: ${dimAvg(earlier)}.` : ''));
+    const gaps = new Map(); for (const f of fbs) for (const g of f.gaps || []) gaps.set(g, (gaps.get(g) || 0) + 1);
+    const top = [...gaps.entries()].sort((a,b) => b[1]-a[1]).slice(0, 4);
+    if (top.length) lines.push('Recurring gaps: ' + top.map(([g,n]) => `${(SKILLS[g] || [g])[0]} (${n} of ${fbs.length} reviews: ${(SKILLS[g] || ['', ''])[1]})`).join('; ') + '.');
+    lines.push('Latest reviews: ' + fbs.slice(-3).map(f => { const q = S.questions.get(f.sub.questionId); const gi = q ? q.gates.findIndex(g => g.id === f.sub.gateId) : -1; return `[${q ? q.title : f.sub.questionId}${gi >= 0 && q && q.gates.length > 1 ? ', part ' + (gi+1) : ''}; ${f.overall}/5; ${f.sub.total ? f.sub.passed + '/' + f.sub.total + ' tests' : 'no tests'}; ${fmtSec(f.sub.gateSec)}] ${f.summary} Issues: ${(f.issues || []).slice(0, 3).map(i => (SKILLS[i.skill] || [i.skill])[0] + ': ' + i.note).join(' | ') || 'none'}. Next step suggested: ${f.nextStep || '-'}`; }).join('\n'));
+  }
+  const nudges = subs.slice(-10).reduce((n, s) => n + ((s.nudges || []).filter(r => r === 'stuck' || r === 'idle').length), 0);
+  const spoken = subs.slice(-10).reduce((n, s) => n + (s.spoken || 0), 0), asked = subs.slice(-10).reduce((n, s) => n + (s.questionsAsked || 0), 0);
+  if (subs.length) lines.push(`Last 10 submissions: ${nudges} stuck/idle nudges from the interviewer, ${asked} clarifying questions asked, ${spoken} things said aloud; typing ${subs.some(s => s.cpm) ? median(subs.filter(s => s.cpm).map(s => s.cpm)) + ' cpm' : 'n/a'}.`);
+  const gs = S.gyms.filter(g => gymStats(g).done.length).slice(-4);
+  if (gs.length) lines.push('Gym sessions: ' + gs.map(g => { const st = gymStats(g); return `${fmtDate(g.startedAt)} ${g.focusLabel || g.focus}: ${st.passed.length}/${st.done.length} passed, ${st.budgetRatio != null ? st.budgetRatio + '% of budget' : 'no budget data'}${st.quality != null ? ', quality ' + st.quality.toFixed(1) : ''}`; }).join('; ') + '.');
+  return lines.join('\n');
+}
+function sessionContext(g){
+  const st = gymStats(g);
+  return `Gym session ${fmtDateTime(g.startedAt)}, focus ${g.focusLabel || g.focus}, ${g.drillIds.length} drills at ${g.minutes || '?'} min${g.finishedAt ? ', finished' : ', in progress'}. ${st.passed.length}/${st.done.length} passed, ${fmtSec(st.time)} total, median ${st.budgetRatio != null ? st.budgetRatio + '% of budget' : 'n/a'}, ${st.cpm != null ? st.cpm + ' cpm' : ''}${st.quality != null ? ', quality ' + st.quality.toFixed(1) : ''}.\n` +
+    st.subs.map((x, i) => x.s ? `Drill ${i+1} ${x.q ? x.q.title : x.s.questionId}: ${gateStatus(x.s) === 'pass' ? 'passed' : 'failed'} (${x.s.total ? x.s.passed + '/' + x.s.total + ' tests' : 'not run'}), ${fmtSec(x.s.gateSec)}${x.q && x.q.gates[0].minutes ? ' of ' + x.q.gates[0].minutes + ' min' : ''}, ${x.s.lines || '?'} lines${x.s.feedback ? `; review ${x.s.feedback.overall}/5: ${x.s.feedback.summary} Issues: ${(x.s.feedback.issues || []).slice(0, 3).map(it => (SKILLS[it.skill] || [it.skill])[0] + ': ' + it.note + (it.fix ? ' Fix: ' + it.fix : '')).join(' | ') || 'none'}. Strengths: ${(x.s.feedback.strengths || []).join(', ') || '-'}.` : '; review pending'}` : `Drill ${i+1}: not reached yet`).join('\n');
+}
+function trainerPanel({chat, save, context, intro, compact}){
+  const box = h('div',{class:'trainer' + (compact ? ' compact' : '')});
+  const log = h('div',{class:'chatlog'});
+  const draw = () => {
+    log.replaceChildren();
+    if (!chat.length) log.append(h('p',{class:'hist', text:intro || 'Your trainer knows your whole record: every review, every session, the days left. Ask for an explanation of any feedback, a lesson on a concept, a plan, or a word when it is not going well.'}));
+    for (const m of chat) log.append(h('div',{class:'msg ' + (m.role === 'you' ? 'you' : 'interviewer')}, h('span',{class:'who', text:m.role === 'you' ? 'You' : 'Trainer'}), h('span',{class:'txt', text:m.text})));
+    if (box.busy) log.append(h('div',{class:'msg interviewer'}, h('span',{class:'who', text:'Trainer'}), h('span',{class:'txt thinking-txt', text:'…'})));
+    log.scrollTop = log.scrollHeight;
+  };
+  const ask = async (text, mode) => {
+    if (box.busy) return;
+    if (!(S.health && S.health.hasKey)){ toast('The trainer needs Claude on the server: see Settings.'); return; }
+    if (text) chat.push({role:'you', text, at:Date.now()});
+    box.busy = true; draw();
+    try { const r = await API.trainer({mode:mode || 'chat', message:text || '', history:chat.slice(0, text ? -1 : undefined).map(m => ({role:m.role, text:m.text})), status:statusDigest(), context:typeof context === 'function' ? context() : (context || '')}); chat.push({role:'trainer', text:r.reply || '(no reply)', at:Date.now()}); }
+    catch(err){ chat.push({role:'trainer', text:'(The trainer could not answer: ' + err.message + ')', at:Date.now()}); }
+    box.busy = false; draw(); if (save) save(chat);
+  };
+  const input = h('textarea',{rows:'2', placeholder:'Ask the trainer…', onkeydown:e => { if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); send(); } }});
+  const send = () => { const v = input.value.trim(); if (!v) return; input.value = ''; ask(v); };
+  const weakest = () => { const subs = S.subs.filter(s => s.feedback).slice(-8); if (!subs.length) return null; return DIMS.map(([k,label]) => ({k, label, v:avg(subs.map(s => s.feedback.scores[k] || s.feedback.overall))})).sort((a,b) => a.v - b.v)[0]; };
+  const chips = h('div',{class:'chips'},
+    h('button',{class:'chip-btn', text:'Where do I stand?', onclick:() => chat.length ? ask('Where do I stand right now, and what would move the estimate most?') : ask('', 'briefing')}),
+    h('button',{class:'chip-btn', text:'Explain my last feedback', onclick:() => ask('Explain my latest review to me: what do the issues actually mean for me, and which one habit fixes the most?')}),
+    h('button',{class:'chip-btn', text:(w => w ? `Teach me: ${w.label.toLowerCase()}` : 'Teach me a concept')(weakest()), onclick:() => { const w = weakest(); ask(w ? `Teach me what "${w.label}" means at the interview bar and how to get better at it; it is my weakest dimension at ${w.v.toFixed(1)}.` : 'Teach me the concept I most need right now.'); }}),
+    h('button',{class:'chip-btn', text:'Plan the week', onclick:() => ask('Give me a plan for the next 7 days of practice given the days left and my record: which questions, which drills, how many sessions.')}),
+    h('button',{class:'chip-btn', text:'I need a push', onclick:() => ask('I am not feeling great about this. Give me a straight read on what the record says and a reason to keep going.')}));
+  put(box, log, chips, h('div',{class:'row'}, input, h('button',{class:'btn primary small', text:'Send', onclick:send})), !(S.health && S.health.hasKey) && h('p',{class:'hist', text:'The trainer needs Claude on the server: see Settings.'}));
+  draw();
+  box.ask = ask;
+  return box;
+}
+function saveTrainerChat(chat){ S.trainerChat = chat; API.trainer({save:chat.slice(-80).map(m => ({role:m.role, text:m.text, at:m.at}))}).catch(() => {}); }
+function saveGymChat(g){ return chat => { g.trainerChat = chat.slice(-60).map(m => ({role:m.role, text:m.text, at:m.at})); API.putGym(g).catch(() => {}); }; }
+
 /* ---------- gym ---------- */
 function gymSubs(g){ return S.subs.filter(s => s.attemptId === g.id); }
 function gymStationSub(g, n){ const subs = gymSubs(g).filter(s => s.questionId === g.drillIds[n]); return subs[subs.length - 1] || null; }
@@ -931,9 +1007,11 @@ function renderGym(gid){
       h('label',{class:'field', style:'flex:1;min-width:220px'}, h('span',{text:'Focus'}), h('select',{id:'gyFocus'}, opts.map(([v,l]) => h('option',{value:v, text:l})))),
       h('label',{class:'field', style:'width:110px'}, h('span',{text:'Drills'}), h('select',{id:'gyCount'}, [3,4,5,6].map(n => h('option',{value:String(n), text:String(n), selected:n === 4})))),
       h('label',{class:'field', style:'width:120px'}, h('span',{text:'Minutes each'}), h('input',{type:'number', id:'gyMin', value:'12', min:'5', max:'30'}))),
+    h('label',{class:'check', style:'margin-top:10px'}, h('input',{type:'checkbox', id:'gyTrainer', checked:!!(S.health && S.health.hasKey)}), h('span',null, h('strong',{text:'Trainer mode'}), ' — a trainer tab in the pad for explanations and a push when you need one (never the solution to the drill you are on), and a personal debrief at the end.')),
     h('p',{class:'hist', style:'margin-top:8px', text:'Unattempted drills that match the focus are used first; if there are not enough, Claude writes the rest (one to three minutes each) before the session starts.'}),
     h('div',{class:'row', style:'margin-top:8px'}, h('button',{class:'btn primary', id:'gyStart', text:'Start', onclick:e => startGym(e.target)}), h('span',{class:'hist', id:'gyNote'})));
   app.append(start);
+  app.append(h('div',{class:'section'}, h('h3',{text:'Your trainer'}), h('p',{class:'hist', text:'Knows every review and session. Explains feedback in your terms, teaches the concept behind a gap, plans the days left, and tells you the truth about how it is going.'}), trainerPanel({chat:S.trainerChat, save:saveTrainerChat})));
   const sessions = S.gyms.slice().reverse();
   const sec = h('div',{class:'section'}, h('h3',{text:'Sessions'}));
   if (!sessions.length) sec.append(h('p',{class:'none', text:'No sessions yet.'}));
@@ -961,7 +1039,7 @@ async function startGym(btn){
       catch(err){ note.textContent = 'Could not write drills: ' + err.message; if (!pick.length){ btn.disabled = false; return; } }
     }
   }
-  const g = {id:'gym-' + tsId(), focus, focusLabel, minutes, startedAt:new Date().toISOString(), finishedAt:null, drillIds:pick.map(q => q.id)};
+  const g = {id:'gym-' + tsId(), focus, focusLabel, minutes, startedAt:new Date().toISOString(), finishedAt:null, drillIds:pick.map(q => q.id), trainer:!!$('#gyTrainer').checked, trainerChat:[], trainerNote:''};
   try { await API.putGym(g); } catch(e){ toast('Could not save the session: ' + e.message); btn.disabled = false; return; }
   S.gyms.push(g); location.hash = '#/gym/' + g.id + '/go';
 }
@@ -991,6 +1069,17 @@ function renderGymSession(g){
   app.append(tiles);
   const pending = st.done.filter(x => !x.s.feedback && (x.s.status === 'grading' || x.s.status === 'reviewing')).length;
   if (pending) app.append(h('div',{class:'thinking', style:'margin-bottom:16px'}, h('span',{class:'dot'}), `${pending} review${pending===1?'':'s'} still running; the debrief fills in when they land.`));
+  if (g.trainer){
+    const take = h('section',{class:'take'}, h('h3',{text:"Trainer's take"}));
+    const body = h('div',{class:'take-body'});
+    const gen = async () => { body.replaceChildren(h('div',{class:'thinking'}, h('span',{class:'dot'}), 'The trainer is reading the session…')); try { const r = await API.trainer({mode:'debrief', history:[], status:statusDigest(), context:sessionContext(g)}); g.trainerNote = r.reply; await API.putGym(g).catch(() => {}); body.replaceChildren(h('p',{class:'note', text:g.trainerNote})); } catch(e){ body.replaceChildren(h('p',{class:'fail', text:e.message})); } };
+    if (g.trainerNote) body.append(h('p',{class:'note', text:g.trainerNote}), h('div',{class:'row'}, h('button',{class:'btn quiet small', text:'Ask again', onclick:gen})));
+    else if (!(S.health && S.health.hasKey)) body.append(h('p',{class:'hist', text:'Needs Claude on the server: see Settings.'}));
+    else if (pending || !g.finishedAt) body.append(h('p',{class:'hist', text:pending ? 'Comes once the reviews land.' : 'Comes when the session is finished.'}), h('button',{class:'btn small', text:'Get it now anyway', onclick:gen}));
+    else { body.append(h('p',{class:'hist', text:'…'})); gen(); }
+    take.append(body, h('details',{class:'earlier', open:!!(g.trainerChat || []).length}, h('summary',{text:'Talk to the trainer about this session'}), trainerPanel({chat:g.trainerChat = g.trainerChat || [], save:saveGymChat(g), context:() => sessionContext(g), compact:true})));
+    app.append(take);
+  }
   const grid = h('div',{class:'ins'});
   // improvements
   const imp = [];

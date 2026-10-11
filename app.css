@@ -432,3 +432,17 @@ details.draftbox .row{margin-top:8px}
 .station .st-body{display:flex;flex-direction:column;gap:2px;min-width:0}
 .debrief{margin:0;padding-left:1.1em;display:flex;flex-direction:column;gap:8px;max-width:72ch}
 .debrief .btn{vertical-align:middle;margin-left:4px}
+/* trainer */
+.trainer{display:flex;flex-direction:column;gap:10px}
+.trainer .chatlog{max-height:420px;overflow:auto}
+.trainer.compact .chatlog{max-height:none}
+.trainer .msg .txt{white-space:pre-wrap}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip-btn{background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:4px 11px;font-size:.82rem;cursor:pointer;color:var(--ink)}
+.chip-btn:hover{border-color:var(--pen);color:var(--pen)}
+.check{display:flex;gap:10px;align-items:flex-start;font-size:.92rem;color:var(--muted);cursor:pointer}
+.check input{margin-top:4px}
+.take{background:var(--pen-soft);border-radius:12px;padding:18px 22px;margin:26px 0 30px;display:flex;flex-direction:column;gap:10px}
+.take .note{white-space:pre-wrap;max-width:80ch;line-height:1.6}
+.take details.earlier{margin-top:6px}
+.padscroll .trainer .chatlog{min-height:60px}

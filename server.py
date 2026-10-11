@@ -38,6 +38,7 @@ from backend import draft as drafter  # noqa: E402
 from backend import qmd  # noqa: E402
 from backend import review as reviewer  # noqa: E402
 from backend import runner  # noqa: E402
+from backend import trainer as coach  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
 VERSION = "2"
@@ -461,6 +462,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, st.export())
         if p == "/api/gym":
             return self._json(200, {"sessions": self.app.gym_sessions()})
+        if p == "/api/trainer":
+            f = self.app.files.data / "trainer.json"
+            try:
+                return self._json(200, json.loads(f.read_text()) if f.exists() else {"chat": []})
+            except json.JSONDecodeError:
+                return self._json(200, {"chat": []})
         if p == "/api/plan":
             f = self.app.files.data / "plan.json"
             if f.exists():
@@ -578,6 +585,23 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 return self._json(200, {"kind": "none", "text": "", "error": str(e)[:200]})
             return self._json(200, n)
+        if p == "/api/trainer":
+            body = self._body()
+            if body.get("save") is not None:
+                chat = [m for m in (body.get("save") or []) if isinstance(m, dict)][-80:]
+                (self.app.files.data / "trainer.json").write_text(json.dumps({"chat": chat}, indent=1) + "\n")
+                return self._json(200, {"chat": chat})
+            if not self.app.can_review:
+                return self._json(409, {"error": "The trainer needs Claude: see Settings."})
+            mode = str(body.get("mode") or "chat")
+            if mode not in ("chat", "briefing", "debrief"):
+                mode = "chat"
+            history = [m for m in (body.get("history") or []) if isinstance(m, dict)][-20:]
+            try:
+                reply = coach.talk(self.app.reviewer, mode, str(body.get("status") or ""), str(body.get("context") or ""), history, str(body.get("message") or ""))
+            except Exception as e:  # noqa: BLE001
+                return self._json(502, {"error": "the trainer did not answer: %s" % str(e)[:300]})
+            return self._json(200, {"reply": reply})
         if p == "/api/gym":
             sess = self._body()
             if not isinstance(sess, dict) or not sess.get("id"):
