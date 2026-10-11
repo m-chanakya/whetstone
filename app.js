@@ -706,7 +706,7 @@ async function renderTry(qid, gym){
     h('button',{class:'ptab', 'aria-current':a.tab === 'question' ? 'true' : null, text:'Question', onclick:() => { a.tab = 'question'; render(); }}),
     h('button',{class:'ptab', 'aria-current':a.tab === 'ask' ? 'true' : null, onclick:() => { a.tab = 'ask'; render(); }}, 'Interviewer', h('span',{class:'count', id:'askCount', text:chatN ? String(chatN) : '', hidden:!chatN})),
     h('button',{class:'ptab', 'aria-current':a.tab === 'feedback' ? 'true' : null, onclick:() => { a.tab = 'feedback'; render(); }}, 'Feedback', Object.keys(a.subs).length ? h('span',{class:'count', text:String(Object.keys(a.subs).length)}) : null),
-    a.gym && (S.gyms.find(x => x.id === a.gym.id) || {}).trainer && h('button',{class:'ptab', 'aria-current':a.tab === 'trainer' ? 'true' : null, text:'Trainer', onclick:() => { a.tab = 'trainer'; render(); }}));
+    S.health && S.health.hasKey && h('button',{class:'ptab', 'aria-current':a.tab === 'trainer' ? 'true' : null, text:'Trainer', onclick:() => { a.tab = 'trainer'; render(); }}));
   const left = h('aside',{class:'padleft'}, tabs, h('div',{class:'padscroll', id:'padleft'}));
   const edHost = h('div',{class:'editor pad-ed'});
   const console_ = h('div',{class:'console', id:'console'});
@@ -781,9 +781,13 @@ function renderPadLeft(q){
     if (a.gi > 0) host.append(h('details',{class:'earlier'}, h('summary',{text:'Earlier parts'}), q.gates.slice(0, a.gi).map((g,i) => h('div',null, h('h4',{text:`Part ${i+1}: ${g.title}`}), promptEl(g.prompt, 'prompt small')))));
     if (q.overview) host.append(h('details',{class:'earlier', open:a.gi === 0}, h('summary',{text:'Overview'}), promptEl(q.overview, 'prompt small')));
   } else if (a.tab === 'trainer'){
-    const g = S.gyms.find(x => x.id === a.gym.id);
-    host.append(h('p',{class:'hist', text:'Your trainer, mid-session. Explains concepts and your earlier feedback, not the answer to this drill. After you submit, ask what the review means.'}),
-      trainerPanel({chat:g.trainerChat = g.trainerChat || [], save:saveGymChat(g), compact:true, context:() => { const s = a.subs[gate.id]; return `Drill ${a.gym.n + 1} of ${g.drillIds.length} in a gym session (${g.focusLabel || g.focus}): "${q.title}". ${s ? `Submitted: ${s.browser && s.browser.total ? s.browser.passed + '/' + s.browser.total + ' hidden tests' : 'not run'}, ${fmtSec(s.gateSec)}.` + (s.feedback ? ` Review ${s.feedback.overall}/5: ${s.feedback.summary} Issues: ${(s.feedback.issues || []).map(i => (SKILLS[i.skill] || [i.skill])[0] + ': ' + i.note + (i.fix ? ' Fix: ' + i.fix : '')).join(' | ') || 'none'}. Why the improved version is better: ${(s.feedback.whyBetter || []).join('; ') || '-'}.` : ' Review pending.') : 'NOT yet submitted: do not give the solution or the key insight for this drill.'}\nDrill prompt: ${gate.prompt}\n` + sessionContext(g); }}));
+    const g = a.gym ? S.gyms.find(x => x.id === a.gym.id) : null;
+    const partCtx = () => { const s = a.subs[gate.id]; const where = g ? `Drill ${a.gym.n + 1} of ${g.drillIds.length} in a gym session (${g.focusLabel || g.focus}): "${q.title}"` : `${q.kind === 'drill' ? 'Drill' : 'Question'} "${q.title}"${q.gates.length > 1 ? `, part ${a.gi + 1} of ${q.gates.length} (${gate.title})` : ''}, ${fmtSec(((a.gateAcc[a.gi] || 0) + ((a.pausedAt || Date.now()) - a.pausedTotal - a.gateStartedAt)/1000))} on this part${gate.minutes ? ' of ' + gate.minutes + ' min' : ''}`;
+      const sub = s ? `Submitted: ${s.browser && s.browser.total ? s.browser.passed + '/' + s.browser.total + ' hidden tests' : 'not run'}, ${fmtSec(s.gateSec)}.` + (s.feedback ? ` Review ${s.feedback.overall}/5: ${s.feedback.summary} Issues: ${(s.feedback.issues || []).map(i => (SKILLS[i.skill] || [i.skill])[0] + ': ' + i.note + (i.fix ? ' Fix: ' + i.fix : '')).join(' | ') || 'none'}. Why the improved version is better: ${(s.feedback.whyBetter || []).join('; ') || '-'}.` : ' Review pending.') : 'NOT yet submitted: do not give the solution or the key insight for this part; teach the concept with a different example.';
+      const earlier = q.gates.slice(0, a.gi).map((gg, i) => { const es = a.subs[gg.id]; return es && es.feedback ? `Earlier part ${i + 1} (${gg.title}): ${es.feedback.overall}/5, ${es.feedback.summary}` : null; }).filter(Boolean).join('\n');
+      return `${where}. ${sub}\nPrompt of this part: ${gate.prompt}\n${earlier}${g ? '\n' + sessionContext(g) : ''}`; };
+    host.append(h('p',{class:'hist', text:'Your trainer, mid-attempt. Explains concepts and your earlier feedback, never the answer to the part you are on. After you submit, ask what the review means.'}),
+      g && g.trainer ? trainerPanel({chat:g.trainerChat = g.trainerChat || [], save:saveGymChat(g), compact:true, context:partCtx}) : trainerPanel({chat:S.trainerChat, save:saveTrainerChat, compact:true, context:partCtx}));
   } else if (a.tab === 'ask'){
     const chat = a.chats[gate.id] = a.chats[gate.id] || [];
     const log = h('div',{class:'chatlog'});
