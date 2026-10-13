@@ -708,6 +708,34 @@ def default_data_dir():
     return ROOT / "data"
 
 
+def migrate_feedback(store):
+    """Fold the retired "communication" dimension into "clarifying" (now the communication score) on stored reviews.
+
+    Runs at every start; a review is rewritten only if it still carries the old key, so this is a no-op afterwards.
+    """
+    n = 0
+    for s in store.submissions():
+        fb = s.get("feedback")
+        if not fb or "communication" not in (fb.get("scores") or {}):
+            continue
+        sc = dict(fb["scores"])
+        comm = sc.pop("communication")
+        try:
+            sc["clarifying"] = int(round((float(sc.get("clarifying", comm)) + float(comm)) / 2))
+        except (TypeError, ValueError):
+            pass
+        fb["scores"] = sc
+        fb["gaps"] = list(dict.fromkeys("clarifying" if g == "communication" else g for g in (fb.get("gaps") or [])))
+        for it in fb.get("issues") or []:
+            if it.get("skill") == "communication":
+                it["skill"] = "clarifying"
+        store.put_feedback(s["id"], fb)
+        n += 1
+    if n:
+        print("merged the thinking-aloud score into communication on %d review(s)" % n)
+    return n
+
+
 def migrate_old_data(data):
     """Move ~/.whetstone into the repo's data folder the first time, if it exists."""
     old = Path.home() / ".whetstone"
@@ -758,6 +786,8 @@ def main():
     Handler.app = App(store, rv, files)
     files.app = Handler.app
     files.restore_if_empty()
+    if migrate_feedback(store):
+        files.mark_dirty()
     changed = files.scan_questions()
     if changed:
         print("loaded %d question file(s) from %s" % (len(changed), files.qdir))
