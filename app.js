@@ -17,11 +17,11 @@ const SKILLS = {
   'language':['Language idioms','Fighting the language or missing its standard tools'],
   'testing':['Checking your own work','No walk-through, tests or invariants'],
   'extensibility':['Building for the next part','Earlier parts were not structured so later rules slot in'],
-  'clarifying':['Clarifying the problem','Coded on assumptions instead of asking about the unstated rules'],
-  'communication':['Thinking out loud','Went quiet; the interviewer could not follow the approach as it formed'],
+  'clarifying':['Communication','Coded on assumptions and in silence: did not ask about the unstated rules or say the approach as it formed'],
+  'communication':['Communication','Coded on assumptions and in silence'],
   'independence':['Working without nudges','Needed the interviewer to get unstuck or to notice the clock'],
 };
-const DIMS = [['clarifying','Clarifying'],['communication','Thinking aloud'],['independence','Independence'],['approach','Approach'],['correctness','Correctness'],['efficiency','Efficiency'],['edgeCases','Edge cases'],['testing','Own tests'],['clarity','Clarity'],['extensibility','Extensibility']];
+const DIMS = [['clarifying','Communication'],['independence','Independence'],['approach','Approach'],['correctness','Correctness'],['efficiency','Efficiency'],['edgeCases','Edge cases'],['testing','Own tests'],['clarity','Clarity'],['extensibility','Extensibility']];
 const VERDICT = ['','Not there yet','Shaky','Borderline','Solid','Strong'];
 const LANGS = {python:'Python', javascript:'JavaScript'};
 
@@ -79,10 +79,10 @@ function hireEstimate(fullAtts, fbs){
   const nudgeCost = s => (s.nudges || []).reduce((x,r) => x + (r === 'stuck' ? 35 : r === 'idle' ? 15 : r === 'time100' ? 5 : 0), 0);
   const subsSeen = last.flatMap(a => first(a).filter(Boolean));
   const fromNudges = subsSeen.length ? avg(subsSeen.map(s => Math.max(0, 100 - nudgeCost(s)))) : null;
-  const fromScores = recentFb.filter(f => f.scores.independence).length ? (avg(recentFb.filter(f => f.scores.independence).map(f => (f.scores.independence + (f.scores.communication || f.scores.independence)) / 2)) - 1) / 4 * 100 : null;
+  const fromScores = recentFb.filter(f => f.scores.independence).length ? (avg(recentFb.filter(f => f.scores.independence).map(f => f.scores.independence)) - 1) / 4 * 100 : null;
   const independence = fromNudges == null ? fromScores : fromScores == null ? fromNudges : (fromNudges + fromScores) / 2;
   const nudgeTotal = subsSeen.reduce((x,s) => x + (s.nudges || []).filter(r => r === 'stuck' || r === 'idle').length, 0);
-  const parts = [{name:'First three parts passing', v:clean, note:'tests clean on parts 1–3, last ' + last.length + ' full attempt' + (last.length===1?'':'s')}, {name:'Inside the time budget', v:pace, note:'time on parts 1–3 vs their budgets'}, {name:'Review quality', v:quality, note:recentFb.length ? 'average verdict over the last ' + recentFb.length + ' reviews' : 'no reviews yet'}, {name:'Clarifying and testing', v:process, note:'asked the right questions, wrote own tests'}, {name:'Independence and narration', v:independence, note:nudgeTotal ? `${nudgeTotal} stuck/idle nudge${nudgeTotal===1?'':'s'} needed on parts 1–3; a stuck nudge costs 35 points, idle 15, overrunning a time check 5` : 'no stuck or idle nudges needed; thinking-aloud score from reviews'}, {name:'Design readiness', v:null, note:'not measured yet'}];
+  const parts = [{name:'First three parts passing', v:clean, note:'tests clean on parts 1–3, last ' + last.length + ' full attempt' + (last.length===1?'':'s')}, {name:'Inside the time budget', v:pace, note:'time on parts 1–3 vs their budgets'}, {name:'Review quality', v:quality, note:recentFb.length ? 'average verdict over the last ' + recentFb.length + ' reviews' : 'no reviews yet'}, {name:'Communication and testing', v:process, note:'asked about the rules, said the approach (typed or spoken), wrote own tests'}, {name:'Independence', v:independence, note:nudgeTotal ? `${nudgeTotal} stuck/idle nudge${nudgeTotal===1?'':'s'} needed on parts 1–3; a stuck nudge costs 35 points, idle 15, overrunning a time check 5` : 'no stuck or idle nudges needed; independence score from reviews'}, {name:'Design readiness', v:null, note:'not measured yet'}];
   const score = Math.round(clean*0.35 + pace*0.15 + (quality ?? 50)*0.25 + (process ?? 50)*0.10 + (independence ?? 60)*0.15);
   let verdict = score >= 80 ? 'Strong hire' : score >= 65 ? 'Hire' : score >= 50 ? 'Lean hire' : score >= 35 ? 'Lean no hire' : 'No hire';
   if (verdict === 'Strong hire') verdict = 'Hire';
@@ -791,19 +791,19 @@ function renderPadLeft(q){
   } else if (a.tab === 'ask'){
     const chat = a.chats[gate.id] = a.chats[gate.id] || [];
     const log = h('div',{class:'chatlog'});
-    if (!chat.length) log.append(h('p',{class:'hist', text:'The prompt leaves things unstated on purpose. Ask the way you would in the room: input sizes, empty input, ties, what to return when something is missing, whether you may assume something. What you ask is part of the grade.'}));
-    for (const m of chat) log.append(h('div',{class:'msg ' + m.role + (m.kind === 'nudge' ? ' nudge' : m.kind === 'say' ? ' say' : '')}, h('span',{class:'who', text:m.role === 'you' ? (m.kind === 'say' ? 'You, aloud' : 'You') : m.kind === 'nudge' ? 'Interviewer, unprompted' + (m.reason ? ' · ' + ({time50:'time check', time80:'time check', time100:'time', idle:'idle', stuck:'stuck'}[m.reason] || m.reason) : '') : 'Interviewer'}), h('span',{class:'txt', text:m.text})));
+    if (!chat.length) log.append(h('p',{class:'hist', text:'The prompt leaves things unstated on purpose. Ask the way you would in the room: input sizes, empty input, ties, what to return when something is missing, whether you may assume something. Also say what you are about to do and why, as you go. Typing here counts exactly like speaking; both make up the Communication score.'}));
+    for (const m of chat) log.append(h('div',{class:'msg ' + m.role + (m.kind === 'nudge' ? ' nudge' : m.kind === 'say' ? ' say' : '')}, h('span',{class:'who', text:m.role === 'you' ? (m.kind === 'say' ? 'You, thinking aloud' : 'You') : m.kind === 'nudge' ? 'Interviewer, unprompted' + (m.reason ? ' · ' + ({time50:'time check', time80:'time check', time100:'time', idle:'idle', stuck:'stuck'}[m.reason] || m.reason) : '') : 'Interviewer'}), h('span',{class:'txt', text:m.text})));
     if (a.asking) log.append(h('div',{class:'msg interviewer'}, h('span',{class:'who', text:'Interviewer'}), h('span',{class:'txt thinking-txt', text:'…'})));
     const box = h('textarea',{rows:'2', placeholder:'Ask a question, or say what you are about to do…', onkeydown:e => { if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); send(); } }});
     const send = () => { const text = box.value.trim(); if (!text) return; box.value = ''; sayToInterviewer(q, text, false); };
-    host.append(log, h('div',{class:'row'}, box, h('button',{class:'btn primary small', text:'Send', onclick:send})), h('p',{class:'hist', text:Voice.supported() ? 'Or press 🎙 Talk above the editor and speak; questions get answered, narration gets a nod. Nudges the interviewer gives without being asked are logged here and count against you.' : 'This browser has no speech recognition; Chrome or Safari do. Nudges the interviewer gives without being asked are logged here and count against you.'}));
+    host.append(log, h('div',{class:'row'}, box, h('button',{class:'btn primary small', text:'Send', onclick:send})), h('p',{class:'hist', text:Voice.supported() ? 'Or press 🎙 Talk above the editor and speak, when you can; questions get answered, narration gets a nod. Nudges the interviewer gives without being asked are logged here and count against you.' : 'Nudges the interviewer gives without being asked are logged here and count against you.'}));
     log.scrollTop = log.scrollHeight;
   } else {
     const ids = q.gates.map(g => g.id).filter(id => a.subs[id]);
     if (!ids.length) host.append(h('p',{class:'none', text:'Submit a part and its review shows here.'}));
     for (const id of ids.reverse()){
       const sub = a.subs[id], gi = q.gates.findIndex(g => g.id === id);
-      host.append(h('h3',{text:`Part ${gi+1}: ${q.gates[gi].title}`}), h('p',{class:'hist', text:`${fmtSec(sub.gateSec)}, ${sub.browser && sub.browser.total ? sub.browser.passed + '/' + sub.browser.total + ' tests' : 'not run'}, ${(sub.chat || []).filter(m => m.role === 'you' && m.kind !== 'say').length} question(s) asked, ${(sub.chat || []).filter(m => m.kind === 'say').length} said aloud, ${(sub.chat || []).filter(m => m.kind === 'nudge').length} nudge(s)`}));
+      host.append(h('h3',{text:`Part ${gi+1}: ${q.gates[gi].title}`}), h('p',{class:'hist', text:`${fmtSec(sub.gateSec)}, ${sub.browser && sub.browser.total ? sub.browser.passed + '/' + sub.browser.total + ' tests' : 'not run'}, ${(sub.chat || []).filter(m => m.role === 'you' && m.kind !== 'say').length} question(s) asked, ${(sub.chat || []).filter(m => m.kind === 'say').length} thought(s) aloud, ${(sub.chat || []).filter(m => m.kind === 'nudge').length} nudge(s)`}));
       if (sub.feedback) host.append(renderReview(sub.feedback));
       else if (sub.reviewError) host.append(h('p',{class:'fail', text:'Review failed: ' + sub.reviewError}));
       else if (sub.pending) host.append(h('div',{class:'thinking'}, h('span',{class:'dot'}), sub.pending));
@@ -920,7 +920,7 @@ function statusDigest(){
   }
   const nudges = subs.slice(-10).reduce((n, s) => n + ((s.nudges || []).filter(r => r === 'stuck' || r === 'idle').length), 0);
   const spoken = subs.slice(-10).reduce((n, s) => n + (s.spoken || 0), 0), asked = subs.slice(-10).reduce((n, s) => n + (s.questionsAsked || 0), 0);
-  if (subs.length) lines.push(`Last 10 submissions: ${nudges} stuck/idle nudges from the interviewer, ${asked} clarifying questions asked, ${spoken} things said aloud; typing ${subs.some(s => s.cpm) ? median(subs.filter(s => s.cpm).map(s => s.cpm)) + ' cpm' : 'n/a'}.`);
+  if (subs.length) lines.push(`Last 10 submissions: ${nudges} stuck/idle nudges from the interviewer, ${asked} clarifying questions asked, ${spoken} thinking-aloud messages (typed or spoken; both count the same); typing ${subs.some(s => s.cpm) ? median(subs.filter(s => s.cpm).map(s => s.cpm)) + ' cpm' : 'n/a'}.`);
   const gs = S.gyms.filter(g => gymStats(g).done.length).slice(-4);
   if (gs.length) lines.push('Gym sessions: ' + gs.map(g => { const st = gymStats(g); return `${fmtDate(g.startedAt)} ${g.focusLabel || g.focus}: ${st.passed.length}/${st.done.length} passed, ${st.budgetRatio != null ? st.budgetRatio + '% of budget' : 'no budget data'}${st.quality != null ? ', quality ' + st.quality.toFixed(1) : ''}`; }).join('; ') + '.');
   return lines.join('\n');
@@ -1249,7 +1249,7 @@ function donut(segs, {size=170, label=''} = {}){
 function legend(segs){ return h('div',{class:'legend'}, segs.map(s => h('span',null, h('i',{style:`background:${s.color}`}), `${s.name} (${s.v})`))); }
 
 /* ---------- analytics ---------- */
-const DIM_SKILL = {clarifying:'clarifying', communication:'communication', independence:'independence', approach:'algo-choice', correctness:'correctness', efficiency:'complexity', edgeCases:'edge-cases', testing:'testing', clarity:'clarity', extensibility:'extensibility'};
+const DIM_SKILL = {clarifying:'clarifying', independence:'independence', approach:'algo-choice', correctness:'correctness', efficiency:'complexity', edgeCases:'edge-cases', testing:'testing', clarity:'clarity', extensibility:'extensibility'};
 function bar(frac, cls, marker){
   const b = h('div',{class:'bar'}, h('i',{class:cls || '', style:`width:${Math.max(0, Math.min(100, frac*100)).toFixed(1)}%`}));
   if (marker != null) b.append(h('s',{style:`left:${Math.max(0, Math.min(100, marker*100)).toFixed(1)}%`, title:'budget'}));
@@ -1284,7 +1284,7 @@ function renderAnalytics(qidFilter){
     h('div',{class:'hire-body'},
       h('p',{text:est.summary}),
       h('div',{class:'hire-parts'}, est.parts.map(p => h('div',{class:'hbar'}, h('div',null, p.name, h('span',{class:'n', text:p.note})), bar(p.v/100, p.v >= 70 ? 'good' : p.v >= 45 ? 'warn' : 'bad'), h('span',{class:'val', text:p.v == null ? '–' : Math.round(p.v) + '%'})))),
-      h('p',{class:'hist', text:'How it is computed: coding readiness is 35% clean first-three parts, 15% inside budget, 25% review quality, 10% clarifying and testing, 15% independence (how many stuck/idle nudges the interviewer had to give, and the thinking-aloud and independence scores from reviews), over your last five full attempts. Design readiness is not measured yet (no design rounds in Whetstone), so the overall is coding only and the verdict is capped at Hire until it is. Interviewers in the write-ups pass three clean parts with sensible questions asked; this estimate follows that bar, not a formal rubric.'}))));
+      h('p',{class:'hist', text:'How it is computed: coding readiness is 35% clean first-three parts, 15% inside budget, 25% review quality, 10% communication and testing, 15% independence (how many stuck/idle nudges the interviewer had to give, and the independence score from reviews), over your last five full attempts. Design readiness is not measured yet (no design rounds in Whetstone), so the overall is coding only and the verdict is capped at Hire until it is. Interviewers in the write-ups pass three clean parts with sensible questions asked; this estimate follows that bar, not a formal rubric.'}))));
   app.append(h('div',{class:'tiles'},
     h('div',{class:'tile'}, h('b',{text:fbs.length ? avg(recent.map(f => f.overall)).toFixed(1) : '–'}), h('span',{text:fbs.length ? `quality, last ${recent.length} review${recent.length===1?'':'s'}` + (earlier.length ? ` (was ${avg(earlier.map(f => f.overall)).toFixed(1)})` : '') : 'no reviews yet'})),
     h('div',{class:'tile'}, h('b',{text:gatesTotal ? Math.round(gatesPassed/gatesTotal*100) + '%' : '–'}), h('span',{text:'parts passed, latest attempts'})),
@@ -1297,7 +1297,7 @@ function renderAnalytics(qidFilter){
   const fixes = [];
   if (fbs.length){
     const worst = DIMS.map(([k,label]) => ({k, label, v:dRecent[k]})).sort((x,y) => x.v-y.v)[0];
-    if (worst.v < 4) fixes.push({title:`${worst.label}: ${worst.v.toFixed(1)} of 5 lately`, why:{clarifying:'You are coding on assumptions. Ask two or three questions on the Ask the interviewer tab before writing code; it is graded.', communication:'You go quiet. Hit Talk and say the approach before you code, name each trade-off as you make it, and say what you would do with more time.', independence:'The interviewer had to step in. Before you stall, walk one example through by hand; when the time check comes, cut scope out loud instead of pushing on.', approach:'The algorithm or data model is not the right fit often enough. Say the approach out loud (in the chat) before coding and sanity-check its complexity.', correctness:'Logic bugs are slipping through. Walk one example through the code by hand before submitting.', efficiency:'A faster approach existed. Before coding, name the complexity you are aiming for and whether the input size allows it.', edgeCases:'Empty, single and degenerate inputs are missed. Write those three tests first, every time.', testing:'Your own tests are thin. A main block with four asserts (normal, empty, single, tricky) is the habit to build.', clarity:'Reviewers find the code hard to follow. Name helpers after what they return; keep one idea per function.', extensibility:'Part N+1 forces rewrites. Keep per-entity state in one structure so a new rule is one more field.'}[worst.k], focus:DIM_SKILL[worst.k], kind:'dim'});
+    if (worst.v < 4) fixes.push({title:`${worst.label}: ${worst.v.toFixed(1)} of 5 lately`, why:{clarifying:'You are coding on assumptions, or in silence. Before writing code, ask two or three questions about the unstated rules and say the approach; typed in the Interviewer tab counts exactly like speaking. Name each trade-off as you make it.', independence:'The interviewer had to step in. Before you stall, walk one example through by hand; when the time check comes, cut scope out loud instead of pushing on.', approach:'The algorithm or data model is not the right fit often enough. Say the approach out loud (in the chat) before coding and sanity-check its complexity.', correctness:'Logic bugs are slipping through. Walk one example through the code by hand before submitting.', efficiency:'A faster approach existed. Before coding, name the complexity you are aiming for and whether the input size allows it.', edgeCases:'Empty, single and degenerate inputs are missed. Write those three tests first, every time.', testing:'Your own tests are thin. A main block with four asserts (normal, empty, single, tricky) is the habit to build.', clarity:'Reviewers find the code hard to follow. Name helpers after what they return; keep one idea per function.', extensibility:'Part N+1 forces rewrites. Keep per-entity state in one structure so a new rule is one more field.'}[worst.k], focus:DIM_SKILL[worst.k], kind:'dim'});
   }
   const gapCount = new Map();
   for (const f of fbs) for (const g of f.gaps || []) gapCount.set(g, (gapCount.get(g)||0) + 1);
