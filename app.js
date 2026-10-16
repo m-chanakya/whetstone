@@ -68,11 +68,11 @@ function fmtSec(s){ s = Math.max(0, Math.round(s||0)); const m = Math.floor(s/60
 const avg = xs => xs.length ? xs.reduce((a,b) => a+b, 0)/xs.length : 0;
 const median = xs => { if (!xs.length) return 0; const s = xs.slice().sort((a,b) => a-b); const m = Math.floor(s.length/2); return s.length % 2 ? s[m] : Math.round((s[m-1]+s[m])/2); };
 function hireEstimate(fullAtts, fbs){
-  const K = 3, last = fullAtts.filter(a => a.q.gates.length >= K).slice(-5);
-  if (!last.length) return {verdict:'Not enough data', score:0, confidence:'no', cls:'none', summary:'Finish at least one full attempt (three or more parts) and the estimate appears.', parts:[]};
-  const first = a => a.q.gates.slice(0, K).map(g => a.gates.get(g.id));
-  const clean = avg(last.map(a => first(a).filter(s => s && gateStatus(s) === 'pass').length / K)) * 100;
-  const pace = avg(last.map(a => { const gs = a.q.gates.slice(0, K); const budget = gs.reduce((x,g) => x + (g.minutes||0)*60, 0); const spent = first(a).reduce((x,s) => x + (s ? s.gateSec||0 : 0), 0); if (!budget) return 1; return Math.max(0, Math.min(1, 1 - Math.max(0, spent - budget) / budget)); })) * 100;
+  const K = 3, last = fullAtts.slice(-5), kOf = a => Math.min(K, a.q.gates.length);
+  if (!last.length) return {verdict:'Not enough data', score:0, confidence:'no', cls:'none', summary:'Finish at least one attempt on a full question and the estimate appears.', parts:[]};
+  const first = a => a.q.gates.slice(0, kOf(a)).map(g => a.gates.get(g.id));
+  const clean = avg(last.map(a => first(a).filter(s => s && gateStatus(s) === 'pass').length / kOf(a))) * 100;
+  const pace = avg(last.map(a => { const gs = a.q.gates.slice(0, kOf(a)); const budget = gs.reduce((x,g) => x + (g.minutes||0)*60, 0); const spent = first(a).reduce((x,s) => x + (s ? s.gateSec||0 : 0), 0); if (!budget) return 1; return Math.max(0, Math.min(1, 1 - Math.max(0, spent - budget) / budget)); })) * 100;
   const recentFb = fbs.slice(-8);
   const quality = recentFb.length ? (avg(recentFb.map(f => f.overall)) - 1) / 4 * 100 : null;
   const process = recentFb.length ? (avg(recentFb.map(f => ((f.scores.clarifying || f.overall) + (f.scores.testing || f.overall)) / 2)) - 1) / 4 * 100 : null;
@@ -644,7 +644,7 @@ async function renderTry(qid, gym){
     if (q.lang === 'python') Runner.warm(m => { const el = $('#pyStatus'); if (el) el.textContent = m; });
   }
   document.body.classList.add('in-pad');
-  const a = S.attempt, gate = q.gates[a.gi];
+  const a = S.attempt, gate = q.gates[a.gi]; if (!a.gateStartedReal) a.gateStartedReal = Date.now();
   const now = () => (a.pausedAt || Date.now()) - a.pausedTotal;
   const tAll = h('span',{class:'timer'}), tGate = h('span',{class:'timer'});
   const typ = () => a.typing[gate.id] = a.typing[gate.id] || {chars:0, activeSec:0};
@@ -677,7 +677,7 @@ async function renderTry(qid, gym){
           return; } }
     }
     if (!(S.health && S.health.hasKey) || a.nudging) return;
-    const lastActive = Math.max(a.lastEditAt || 0, a.lastSpokeAt || 0, a.gateStartedAt);
+    const lastActive = Math.max(a.lastEditAt || 0, a.lastSpokeAt || 0, a.gateStartedReal || 0);
     const idleSec = (nowT - lastActive) / 1000, inPart = g;
     if (idleSec >= 240 && inPart >= 180 && nowT - a.lastNudgeAt > 300000){ a.lastNudgeAt = nowT; askNudge('idle'); return; }
     const code = curEditor ? curEditor.get() : a.code;
@@ -691,22 +691,23 @@ async function renderTry(qid, gym){
     a.nudging = false;
   };
   tick(); timerInt = setInterval(tick, 1000);
-  const gatesNav = h('div',{class:'gates', role:'tablist'}, q.gates.map((g,i) => { const locked = i > a.reached; return h('button',{class:'gate' + (locked ? ' locked' : ''), role:'tab', disabled:locked, 'aria-current':i === a.gi ? 'true' : null, title:locked ? `Part ${i+1} is revealed when you submit part ${i}` : g.title, onclick:() => switchGate(q, i)}, h('span',{class:'pip ' + gateStatus(a.subs[g.id])}), locked ? `${i+1} 🔒` : `${i+1}`); }));
-  const hasNext = a.gi < q.gates.length - 1, submittedHere = !!a.subs[gate.id];
-  const topbar = h('div',{class:'padbar'},
+  const buildGates = () => h('div',{class:'gates', role:'tablist'}, q.gates.map((g,i) => { const locked = i > a.reached; return h('button',{class:'gate' + (locked ? ' locked' : ''), role:'tab', disabled:locked, 'aria-current':i === a.gi ? 'true' : null, title:locked ? `Part ${i+1} is revealed when you submit part ${i}` : g.title, onclick:() => switchGate(q, i)}, h('span',{class:'pip ' + gateStatus(a.subs[g.id])}), locked ? `${i+1} 🔒` : `${i+1}`); }));
+  const buildBar = () => { const hasNext = a.gi < q.gates.length - 1, submittedHere = !!a.subs[gate.id]; return h('div',{class:'padbar'},
     h('a',{class:'btn quiet small', href:a.gym ? '#/gym/' + a.gym.id : '#/q/' + qid, text:'← ' + (a.gym ? `Gym ${a.gym.n + 1}/${(S.gyms.find(x => x.id === a.gym.id) || {drillIds:[]}).drillIds.length}: ` : '') + (q.title.length > 38 ? q.title.slice(0,36) + '…' : q.title)}),
-    gatesNav,
+    buildGates(),
     h('span',{class:'spacer'}),
     h('div',{class:'timers'}, h('div',null, tGate, h('small',{text:`part ${a.gi+1}${gate.minutes ? ' / ' + gate.minutes + ' min' : ''}`})), h('div',null, tAll, h('small',{text:'total'}))),
-    h('button',{class:'btn quiet small', id:'pauseBtn', text:a.pausedAt ? 'Resume' : 'Pause', onclick:() => { if (a.pausedAt){ a.pausedTotal += Date.now() - a.pausedAt; a.pausedAt = 0; } else a.pausedAt = Date.now(); $('#pauseBtn').textContent = a.pausedAt ? 'Resume' : 'Pause'; tick(); }}),
+    h('button',{class:'btn quiet small', id:'pauseBtn', text:a.pausedAt ? 'Resume' : 'Pause', onclick:() => { if (a.pausedAt){ a.pausedTotal += Date.now() - a.pausedAt; a.pausedAt = 0; a.gateStartedReal = Date.now(); } else a.pausedAt = Date.now(); $('#pauseBtn').textContent = a.pausedAt ? 'Resume' : 'Pause'; tick(); }}),
     hasNext && submittedHere && h('button',{class:'btn small', text:'Next part →', title:'Move on like an interviewer would, even if tests still fail', onclick:() => advanceGate(q)}),
-    a.gym ? (submittedHere ? h('button',{class:'btn primary small', text:gymIsLast(a.gym) ? 'Finish session →' : 'Next drill →', onclick:() => gymAdvance(q)}) : h('button',{class:'btn quiet small', text:'Leave session', onclick:() => finishAttempt(q)})) : h('button',{class:'btn quiet small', text:'Finish', onclick:() => finishAttempt(q)}));
+    a.gym ? (submittedHere ? h('button',{class:'btn primary small', text:gymIsLast(a.gym) ? 'Finish session →' : 'Next drill →', onclick:() => gymAdvance(q)}) : h('button',{class:'btn quiet small', text:'Leave session', onclick:() => finishAttempt(q)})) : h('button',{class:'btn quiet small', text:'Finish', onclick:() => finishAttempt(q)})); };
+  let topbar = buildBar();
+  a._refreshBar = () => { const nb = buildBar(); topbar.replaceWith(nb); topbar = nb; };
   const chatN = (a.chats[gate.id] || []).filter(m => m.role === 'you' || m.kind === 'nudge').length;
   const tabs = h('div',{class:'ptabs'},
-    h('button',{class:'ptab', 'aria-current':a.tab === 'question' ? 'true' : null, text:'Question', onclick:() => { a.tab = 'question'; render(); }}),
-    h('button',{class:'ptab', 'aria-current':a.tab === 'ask' ? 'true' : null, onclick:() => { a.tab = 'ask'; render(); }}, 'Interviewer', h('span',{class:'count', id:'askCount', text:chatN ? String(chatN) : '', hidden:!chatN})),
-    h('button',{class:'ptab', 'aria-current':a.tab === 'feedback' ? 'true' : null, onclick:() => { a.tab = 'feedback'; render(); }}, 'Feedback', Object.keys(a.subs).length ? h('span',{class:'count', text:String(Object.keys(a.subs).length)}) : null),
-    S.health && S.health.hasKey && h('button',{class:'ptab', 'aria-current':a.tab === 'trainer' ? 'true' : null, text:'Trainer', onclick:() => { a.tab = 'trainer'; render(); }}));
+    h('button',{class:'ptab', 'aria-current':a.tab === 'question' ? 'true' : null, text:'Question', onclick:() => setPadTab(q, 'question')}),
+    h('button',{class:'ptab', 'aria-current':a.tab === 'ask' ? 'true' : null, onclick:() => setPadTab(q, 'ask')}, 'Interviewer', h('span',{class:'count', id:'askCount', text:chatN ? String(chatN) : '', hidden:!chatN})),
+    h('button',{class:'ptab', 'aria-current':a.tab === 'feedback' ? 'true' : null, onclick:() => setPadTab(q, 'feedback')}, 'Feedback', Object.keys(a.subs).length ? h('span',{class:'count', text:String(Object.keys(a.subs).length)}) : null),
+    S.health && S.health.hasKey && h('button',{class:'ptab', 'aria-current':a.tab === 'trainer' ? 'true' : null, text:'Trainer', onclick:() => setPadTab(q, 'trainer')}));
   const left = h('aside',{class:'padleft'}, tabs, h('div',{class:'padscroll', id:'padleft'}));
   const edHost = h('div',{class:'editor pad-ed'});
   const console_ = h('div',{class:'console', id:'console'});
@@ -769,6 +770,13 @@ function toggleVoice(q){
   if (!ok) return;
   a.voice = true; btn.textContent = '● Listening'; btn.classList.add('on');
   toast('Listening. Ask the interviewer anything, or just narrate what you are doing; the interviewer answers out loud.');
+}
+function setPadTab(q, tab){
+  const a = S.attempt; if (!a) return; a.tab = tab;
+  for (const b of document.querySelectorAll('.ptab')) b.toggleAttribute('aria-current', false);
+  const idx = {question:0, ask:1, feedback:2, trainer:3}[tab]; const btn = document.querySelectorAll('.ptab')[idx]; if (btn) btn.setAttribute('aria-current', 'true');
+  const fb = document.querySelectorAll('.ptab')[2]; if (fb){ const n = Object.keys(a.subs).length; let c = fb.querySelector('.count'); if (n){ if (!c){ c = h('span',{class:'count'}); fb.append(c); } c.textContent = String(n); } }
+  renderPadLeft(q);
 }
 function renderPadLeft(q){
   const a = S.attempt, host = $('#padleft'); if (!a || !host) return;
@@ -845,7 +853,7 @@ function switchGate(q, i){
   a.code = curEditor ? curEditor.get() : a.code;
   const nowMs = (a.pausedAt || Date.now()) - a.pausedTotal;
   a.gateAcc[a.gi] = (a.gateAcc[a.gi] || 0) + (nowMs - a.gateStartedAt)/1000;
-  a.gi = i; a.gateStartedAt = nowMs; a.tab = 'question'; render();
+  a.gi = i; a.gateStartedAt = nowMs; a.gateStartedReal = Date.now(); a.tab = 'question'; render();
 }
 async function runCurrent(q, hidden){
   const a = S.attempt, gate = q.gates[a.gi], btn = $('#runBtn'); if (!$('#console') || a.busy) return null;
@@ -889,7 +897,7 @@ async function submitCurrent(q){
   if (a.gi < q.gates.length - 1 && passed){
     advanceGate(q);
     toast(`Part ${a.gi} passed. Here is the follow-up; the review lands under Feedback.`);
-  } else { a.tab = 'feedback'; render(); if (a.gi < q.gates.length - 1) toast('Not all tests pass. Fix and resubmit, or use "Next part" to move on the way an interviewer would.'); }
+  } else { if (a._refreshBar) a._refreshBar(); setPadTab(q, 'feedback'); if (a.gi < q.gates.length - 1) toast('Not all tests pass. Fix and resubmit, or use "Next part" to move on the way an interviewer would.'); }
 }
 function finishAttempt(q){
   const a = S.attempt; const n = Object.keys(a.subs).length;
