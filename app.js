@@ -26,7 +26,7 @@ const VERDICT = ['','Not there yet','Shaky','Borderline','Solid','Strong'];
 const LANGS = {python:'Python', javascript:'JavaScript'};
 
 /* ---------- state ---------- */
-const S = { loading:true, index:null, questions:new Map(), subs:[], view:null, attempt:null, busy:null, dirty:false, plan:null, gyms:[], trainerChat:[] };
+const S = { loading:true, index:null, questions:new Map(), subs:[], view:null, attempt:null, busy:null, dirty:false, plan:null, gyms:[], trainerChat:[], trainerNotes:'' };
 const DEFAULT_PLAN = {company:'OpenAI', stages:[{name:'Phone screen', date:'2026-10-22T09:00', rounds:['Coding','Architecture'], note:'both rounds must pass'}, {name:'Onsite', date:'', rounds:['Coding','Architecture','Previous design','Behavioral'], note:'unlocked by the phone screen; dates TBD'}]};
 const $ = s => document.querySelector(s);
 const app = $('#app');
@@ -151,7 +151,7 @@ async function loadIndex(){
   S.health = null;
   try { S.health = await API.health(); } catch(e){ S.health = null; }
   let idx = {questions:[], submissions:[]};
-  if (S.health){ try { idx = await API.index(); } catch(e){ toast('The backend answered but the index failed: ' + e.message); } try { S.plan = await API.plan(); } catch(e){ S.plan = null; } try { S.gyms = (await API.gyms()).sessions || []; } catch(e){ S.gyms = []; } try { S.trainerChat = (await API.trainerChat()).chat || []; } catch(e){ S.trainerChat = []; } }
+  if (S.health){ try { idx = await API.index(); } catch(e){ toast('The backend answered but the index failed: ' + e.message); } try { S.plan = await API.plan(); } catch(e){ S.plan = null; } try { S.gyms = (await API.gyms()).sessions || []; } catch(e){ S.gyms = []; } try { const ts = await API.trainerChat(); S.trainerChat = ts.chat || []; S.trainerNotes = ts.notes || ''; } catch(e){ S.trainerChat = []; } }
   S.index = idx;
   S.questions = new Map(idx.questions.map(q => [q.id, q]));
   S.subs = idx.submissions.slice().sort((a,b) => a.at.localeCompare(b.at));
@@ -596,7 +596,7 @@ async function renderQuestion(qid){
         h('td',null, s && h('button',{class:'link', text:'Open', onclick:() => openSubmission(q, g, i, s)}))); })));
     const lastGate = q.gates.reduce((m, g, i) => a.gates.get(g.id) ? i : m, -1);
     sec.append(h('div',{class:'row', style:'margin-top:8px'}, h('h4',{text:`${fmtDateTime(a.at)}: ${a.passed}/${q.gates.length} parts, ${fmtSec(a.totalSec)}${a.quality != null ? ', quality ' + a.quality.toFixed(1) : ''}`}), h('span',{class:'spacer'}),
-      h('button',{class:'btn small', text:'Resume from here', title:'New attempt with this code loaded, starting at the next part', onclick:async () => { const last = a.gates.get(q.gates[lastGate].id); const full = await fetchSubmission(last); S.resume = {qid, code:full.code || '', gi:Math.min(lastGate + (gateStatus(last) === 'pass' ? 1 : 0), q.gates.length - 1), reached:Math.min(lastGate + 1, q.gates.length - 1), from:a.id}; location.hash = '#/q/' + qid + '/try'; }})), tbl);
+      h('button',{class:'btn small', text:'Continue in a new attempt', title:'Starts a new attempt with this code loaded, at the next part; the clock starts fresh', onclick:async () => { const last = a.gates.get(q.gates[lastGate].id); const full = await fetchSubmission(last); S.resume = {qid, code:full.code || '', gi:Math.min(lastGate + (gateStatus(last) === 'pass' ? 1 : 0), q.gates.length - 1), reached:Math.min(lastGate + 1, q.gates.length - 1), from:a.id}; location.hash = '#/q/' + qid + '/try'; }})), tbl);
   }
   app.append(sec);
 }
@@ -774,7 +774,7 @@ function toggleVoice(q){
 function setPadTab(q, tab){
   const a = S.attempt; if (!a) return; a.tab = tab;
   for (const b of document.querySelectorAll('.ptab')) b.toggleAttribute('aria-current', false);
-  const idx = {question:0, ask:1, feedback:2, trainer:3}[tab]; const btn = document.querySelectorAll('.ptab')[idx]; if (btn) btn.setAttribute('aria-current', 'true');
+  const idx = {question:0, ask:1, feedback:2, trainer:3}[tab]; const btn = document.querySelectorAll('.ptab')[idx]; if (btn){ btn.setAttribute('aria-current', 'true'); const d = btn.querySelector('.newdot'); if (d) d.remove(); }
   const fb = document.querySelectorAll('.ptab')[2]; if (fb){ const n = Object.keys(a.subs).length; let c = fb.querySelector('.count'); if (n){ if (!c){ c = h('span',{class:'count'}); fb.append(c); } c.textContent = String(n); } }
   renderPadLeft(q);
 }
@@ -888,7 +888,7 @@ async function submitCurrent(q){
       if (full.status === 'review-failed'){ sub.reviewError = full.reviewError || 'unknown error'; sub.pending = ''; }
       else if (full.status === 'done' || (full.status === 'reviewing' && !S.health.hasKey)) sub.pending = full.feedback ? '' : '';
       else if (full.status === 'reviewing') sub.pending = 'Claude is reviewing it…';
-      if (S.attempt === a && a.tab === 'feedback') renderPadLeft(q);
+      if (S.attempt === a){ if (a.tab === 'feedback') renderPadLeft(q); else if (full.feedback || full.status === 'review-failed'){ const fb = document.querySelectorAll('.ptab')[2]; if (fb && !fb.querySelector('.newdot')) fb.append(h('span',{class:'newdot', title:'A new review landed'})); toast(full.feedback ? `Review for part ${q.gates.findIndex(g => g.id === sub.gateId) + 1} is in: ${full.feedback.overall}/5.` : 'The review failed; see Feedback.'); } }
     });
   }
   if (S.attempt !== a) return;
@@ -953,15 +953,16 @@ function trainerPanel({chat, save, context, intro, compact}){
     if (!(S.health && S.health.hasKey)){ toast('The trainer needs Claude on the server: see Settings.'); return; }
     if (text) chat.push({role:'you', text, at:Date.now()});
     box.busy = true; draw();
-    try { const r = await API.trainer({mode:mode || 'chat', message:text || '', history:chat.slice(0, text ? -1 : undefined).map(m => ({role:m.role, text:m.text})), status:statusDigest(), context:typeof context === 'function' ? context() : (context || '')}); chat.push({role:'trainer', text:r.reply || '(no reply)', at:Date.now()}); }
+    try { const r = await API.trainer({mode:mode || 'chat', message:text || '', history:chat.slice(0, text ? -1 : undefined).map(m => ({role:m.role, text:m.text})), status:statusDigest(), context:sinceLast(chat) + (typeof context === 'function' ? context() : (context || ''))}); chat.push({role:'trainer', text:r.reply || '(no reply)', at:Date.now()}); if (r.notes != null) S.trainerNotes = r.notes; const nb = $('#coachNotes'); if (nb) nb.textContent = S.trainerNotes || 'No notes yet.'; }
     catch(err){ chat.push({role:'trainer', text:'(The trainer could not answer: ' + err.message + ')', at:Date.now()}); }
     box.busy = false; draw(); if (save) save(chat);
   };
   const input = h('textarea',{rows:'2', placeholder:'Ask the trainer…', onkeydown:e => { if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); send(); } }});
   const send = () => { const v = input.value.trim(); if (!v) return; input.value = ''; ask(v); };
   const weakest = () => { const subs = S.subs.filter(s => s.feedback).slice(-8); if (!subs.length) return null; return DIMS.map(([k,label]) => ({k, label, v:avg(subs.map(s => s.feedback.scores[k] || s.feedback.overall))})).sort((a,b) => a.v - b.v)[0]; };
+  const fresh = sinceLast(chat);
   const chips = h('div',{class:'chips'},
-    h('button',{class:'chip-btn', text:'Where do I stand?', onclick:() => chat.length ? ask('Where do I stand right now, and what would move the estimate most?') : ask('', 'briefing')}),
+    h('button',{class:'chip-btn', text:!chat.length ? 'Where do I stand?' : fresh ? 'Check in on what I did since we talked' : 'Where do I stand?', onclick:() => !chat.length ? ask('', 'briefing') : fresh ? ask('', 'checkin') : ask('Where do I stand right now, and what would move the estimate most?')}),
     h('button',{class:'chip-btn', text:'Explain my last feedback', onclick:() => ask('Explain my latest review to me: what do the issues actually mean for me, and which one habit fixes the most?')}),
     h('button',{class:'chip-btn', text:(w => w ? `Teach me: ${w.label.toLowerCase()}` : 'Teach me a concept')(weakest()), onclick:() => { const w = weakest(); ask(w ? `Teach me what "${w.label}" means at the interview bar and how to get better at it; it is my weakest dimension at ${w.v.toFixed(1)}.` : 'Teach me the concept I most need right now.'); }}),
     h('button',{class:'chip-btn', text:'Plan the week', onclick:() => ask('Give me a plan for the next 7 days of practice given the days left and my record: which questions, which drills, how many sessions.')}),
@@ -970,6 +971,15 @@ function trainerPanel({chat, save, context, intro, compact}){
   draw();
   box.ask = ask;
   return box;
+}
+function sinceLast(chat){
+  const last = [...chat].reverse().find(m => m.role === 'trainer'); if (!last || !last.at) return '';
+  const since = new Date(last.at).toISOString();
+  const subs = S.subs.filter(s => s.at > since), gyms = S.gyms.filter(g => g.startedAt > since);
+  if (!subs.length && !gyms.length) return '';
+  const passed = subs.filter(s => gateStatus(s) === 'pass').length, fbs = subs.filter(s => s.feedback);
+  const parts = subs.slice(-6).map(s => { const q = S.questions.get(s.questionId); return `${q ? q.title : s.questionId}: ${gateStatus(s) === 'pass' ? 'passed' : 'failed'}${s.feedback ? ', ' + s.feedback.overall + '/5' : ''}, ${fmtSec(s.gateSec)}${(s.nudges || []).length ? ', ' + s.nudges.length + ' nudge(s)' : ''}${s.questionsAsked ? ', ' + s.questionsAsked + ' question(s) asked' : ''}${s.spoken ? ', ' + s.spoken + ' thinking-aloud' : ''}`; }).join('; ');
+  return `Since your last conversation (${fmtDateTime(since)}): ${subs.length} submission(s), ${passed} passed, ${gyms.length} gym session(s)${fbs.length ? ', average review ' + avg(fbs.map(s => s.feedback.overall)).toFixed(1) : ''}. ${parts}.\n`;
 }
 function saveTrainerChat(chat){ S.trainerChat = chat; API.trainer({save:chat.slice(-80).map(m => ({role:m.role, text:m.text, at:m.at}))}).catch(() => {}); }
 function saveGymChat(g){ return chat => { g.trainerChat = chat.slice(-60).map(m => ({role:m.role, text:m.text, at:m.at})); API.putGym(g).catch(() => {}); }; }
@@ -1023,7 +1033,10 @@ function renderGym(gid){
     h('p',{class:'hist', style:'margin-top:8px', text:'Unattempted drills that match the focus are used first; if there are not enough, Claude writes the rest (one to three minutes each) before the session starts.'}),
     h('div',{class:'row', style:'margin-top:8px'}, h('button',{class:'btn primary', id:'gyStart', text:'Start', onclick:e => startGym(e.target)}), h('span',{class:'hist', id:'gyNote'})));
   app.append(start);
-  app.append(h('div',{class:'section'}, h('h3',{text:'Your trainer'}), h('p',{class:'hist', text:'Knows every review and session. Explains feedback in your terms, teaches the concept behind a gap, plans the days left, and tells you the truth about how it is going.'}), trainerPanel({chat:S.trainerChat, save:saveTrainerChat})));
+  app.append(h('div',{class:'section'}, h('div',{class:'row'}, h('h3',{text:'Your trainer'}), h('span',{class:'spacer'}), S.trainerChat.length > 0 && h('button',{class:'btn quiet small', text:'Start a fresh conversation', title:'Clears the chat; the trainer keeps its coach notes', onclick:() => { if (!confirm('Clear the conversation? The trainer keeps its coach notes about you.')) return; S.trainerChat.length = 0; saveTrainerChat(S.trainerChat); render(); }})),
+    h('p',{class:'hist', text:'Knows every review and session, keeps notes between conversations, and holds you to what you said you would do. Explains feedback in your terms, teaches by making you try the first step, plans the days left, and tells you the truth about how it is going.'}),
+    trainerPanel({chat:S.trainerChat, save:saveTrainerChat}),
+    h('details',{class:'earlier'}, h('summary',{text:"Coach notes (what the trainer remembers about you)"}), h('p',{class:'hist', id:'coachNotes', style:'white-space:pre-wrap', text:S.trainerNotes || 'No notes yet; they appear after the first conversation.'}))));
   const sessions = S.gyms.slice().reverse();
   const sec = h('div',{class:'section'}, h('h3',{text:'Sessions'}));
   if (!sessions.length) sec.append(h('p',{class:'none', text:'No sessions yet.'}));

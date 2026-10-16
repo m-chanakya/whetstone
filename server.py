@@ -358,12 +358,29 @@ class App:
             q["id"] = "%s-%d" % (base, n)
             n += 1
         q.setdefault("createdAt", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        if q.get("kind") == "drill":
+            q["skills"] = normalize_skills(q.get("skills"))
         self.store.put_question(q)
         self.files.write_question(q)
         if d.get("solution"):
             (self.files.qdir / (q["id"] + ".solution.py")).write_text(d["solution"])
         self.files.mark_dirty()
         return q
+
+    def trainer_state(self):
+        f = self.files.data / "trainer.json"
+        try:
+            st = json.loads(f.read_text()) if f.exists() else {}
+        except json.JSONDecodeError:
+            st = {}
+        if not isinstance(st, dict):
+            st = {}
+        st.setdefault("chat", [])
+        st.setdefault("notes", "")
+        return st
+
+    def save_trainer_state(self, st):
+        (self.files.data / "trainer.json").write_text(json.dumps(st, indent=1) + "\n")
 
     def gym_sessions(self):
         f = self.files.data / "gym.json"
@@ -463,11 +480,7 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/gym":
             return self._json(200, {"sessions": self.app.gym_sessions()})
         if p == "/api/trainer":
-            f = self.app.files.data / "trainer.json"
-            try:
-                return self._json(200, json.loads(f.read_text()) if f.exists() else {"chat": []})
-            except json.JSONDecodeError:
-                return self._json(200, {"chat": []})
+            return self._json(200, self.app.trainer_state())
         if p == "/api/plan":
             f = self.app.files.data / "plan.json"
             if f.exists():
@@ -587,21 +600,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, n)
         if p == "/api/trainer":
             body = self._body()
+            state = self.app.trainer_state()
             if body.get("save") is not None:
-                chat = [m for m in (body.get("save") or []) if isinstance(m, dict)][-80:]
-                (self.app.files.data / "trainer.json").write_text(json.dumps({"chat": chat}, indent=1) + "\n")
-                return self._json(200, {"chat": chat})
+                state["chat"] = [m for m in (body.get("save") or []) if isinstance(m, dict)][-80:]
+                self.app.save_trainer_state(state)
+                return self._json(200, state)
             if not self.app.can_review:
                 return self._json(409, {"error": "The trainer needs Claude: see Settings."})
             mode = str(body.get("mode") or "chat")
-            if mode not in ("chat", "briefing", "debrief"):
+            if mode not in ("chat", "briefing", "debrief", "checkin"):
                 mode = "chat"
             history = [m for m in (body.get("history") or []) if isinstance(m, dict)][-20:]
             try:
-                reply = coach.talk(self.app.reviewer, mode, str(body.get("status") or ""), str(body.get("context") or ""), history, str(body.get("message") or ""))
+                out = coach.talk(self.app.reviewer, mode, str(body.get("status") or ""), str(body.get("context") or ""), history, str(body.get("message") or ""), notes=state.get("notes") or "")
             except Exception as e:  # noqa: BLE001
                 return self._json(502, {"error": "the trainer did not answer: %s" % str(e)[:300]})
-            return self._json(200, {"reply": reply})
+            if out.get("notes"):
+                state["notes"] = out["notes"]
+                state["notesAt"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                self.app.save_trainer_state(state)
+            return self._json(200, {"reply": out["reply"], "notes": state.get("notes") or ""})
         if p == "/api/gym":
             sess = self._body()
             if not isinstance(sess, dict) or not sess.get("id"):
@@ -708,6 +726,50 @@ def default_data_dir():
     return ROOT / "data"
 
 
+def normalize_skills(text):
+    """Map Claude's free-text skill tags ("edge-cases", "Logic bugs (skill)") onto the fixed skill names, deduplicated.
+
+    Unknown tags are kept, tidied, so a topic-ish tag such as "Graphs" still groups with itself.
+    """
+    out = []
+    for raw in re.split(r"[;,/]", str(text or "")):
+        tag = re.sub(r"\s*\((skill|topic)\)\s*$", "", raw.strip(), flags=re.I).strip()
+        if not tag:
+            continue
+        key = re.sub(r"[^a-z0-9]+", "", tag.lower())
+        hit = None
+        for k, (name, _) in reviewer.SKILLS.items():
+            kk, kn = re.sub(r"[^a-z0-9]+", "", k.lower()), re.sub(r"[^a-z0-9]+", "", name.lower())
+            if key in (kk, kn) or (len(key) >= 5 and (key in kn or kn in key)):
+                hit = name
+                break
+        if hit is None:
+            # a few common spellings Claude uses that do not contain the display name
+            aliases = {"logicbugs": "correctness", "bugs": "correctness", "performance": "complexity", "bigo": "complexity", "speed": "complexity", "boundaries": "edge-cases", "cornercases": "edge-cases", "naming": "clarity", "readability": "clarity", "communication": "clarifying", "clarifyingquestions": "clarifying", "tests": "testing", "testcases": "testing", "datastructures": "ds-choice", "datastructure": "ds-choice", "algorithm": "algo-choice", "algorithms": "algo-choice", "decomposition": "structure"}
+            for alias, k in aliases.items():
+                if alias in key and k in reviewer.SKILLS:
+                    hit = reviewer.SKILLS[k][0]
+                    break
+        name = hit or tag[:1].upper() + tag[1:]
+        if name not in out:
+            out.append(name)
+    return "; ".join(out)
+
+
+def migrate_drill_skills(store):
+    n = 0
+    for q in store.questions():
+        if q.get("kind") == "drill":
+            fixed = normalize_skills(q.get("skills"))
+            if fixed != (q.get("skills") or ""):
+                q["skills"] = fixed
+                store.put_question(q)
+                n += 1
+    if n:
+        print("normalised the skill tags on %d drill(s)" % n)
+    return n
+
+
 def migrate_feedback(store):
     """Fold the retired "communication" dimension into "clarifying" (now the communication score) on stored reviews.
 
@@ -786,7 +848,8 @@ def main():
     Handler.app = App(store, rv, files)
     files.app = Handler.app
     files.restore_if_empty()
-    if migrate_feedback(store):
+    if migrate_feedback(store) + migrate_drill_skills(store):
+        files.export_all_questions()
         files.mark_dirty()
     changed = files.scan_questions()
     if changed:

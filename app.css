@@ -446,3 +446,4 @@ details.draftbox .row{margin-top:8px}
 .take .note{white-space:pre-wrap;max-width:80ch;line-height:1.6}
 .take details.earlier{margin-top:6px}
 .padscroll .trainer .chatlog{min-height:60px}
+.ptab .newdot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--bad);margin-left:6px;vertical-align:middle;animation:pulse 1.4s ease-in-out infinite}
