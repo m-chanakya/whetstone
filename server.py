@@ -330,8 +330,13 @@ def summarize_submission(s):
 
 
 def summarize_question(q):
+    gates = q.get("gates", [])
+    first = gates[0] if gates else {}
+    blurb = re.sub(r"\s+", " ", str(q.get("overview") or first.get("prompt") or "")).strip()[:220]
+    norm = lambda s: re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).strip()  # noqa: E731
+    sig = {"prompt": norm(first.get("prompt"))[:240], "tests": "|".join(t for t in (norm(g.get("tests")) for g in gates) if t)}
     return {k: q.get(k) for k in ("id", "title", "topic", "difficulty", "lang", "source", "url", "createdAt", "kind", "variantOf", "skills")} | {
-        "gates": [{k: g.get(k) for k in ("id", "title", "entry", "minutes")} for g in q.get("gates", [])]}
+        "blurb": blurb, "sig": sig, "gates": [{k: g.get(k) for k in ("id", "title", "entry", "minutes")} for g in gates]}
 
 
 class App:
@@ -734,8 +739,8 @@ def normalize_skills(text):
     out = []
     for raw in re.split(r"[;,/]", str(text or "")):
         tag = re.sub(r"\s*\((skill|topic)\)\s*$", "", raw.strip(), flags=re.I).strip()
-        if not tag:
-            continue
+        if not tag or len(tag) > 48 or len(tag.split()) > 5:
+            continue  # a sentence (the user's hint echoed back) is not a tag
         key = re.sub(r"[^a-z0-9]+", "", tag.lower())
         hit = None
         for k, (name, _) in reviewer.SKILLS.items():

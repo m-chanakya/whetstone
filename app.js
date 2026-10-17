@@ -515,6 +515,31 @@ function render(){
 }
 
 /* ---------- questions list ---------- */
+const normText = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+function dupSignatures(q){
+  if (q.sig) return {title:normText(q.title), prompt:q.sig.prompt || '', tests:q.sig.tests || ''};
+  const tests = q.gates.map(g => normText(g.tests)).filter(Boolean).join('|');
+  return {title:normText(q.title), prompt:normText(q.gates[0] && q.gates[0].prompt).slice(0, 240), tests};
+}
+function findDuplicates(){
+  // exact duplicates: same normalised title, or identical test sets, or identical first prompt
+  const qs = [...S.questions.values()], sig = new Map(qs.map(q => [q.id, dupSignatures(q)])), out = new Map();
+  for (let i = 0; i < qs.length; i++) for (let j = i + 1; j < qs.length; j++){
+    const a = sig.get(qs[i].id), b = sig.get(qs[j].id); if (qs[i].variantOf === qs[j].id || qs[j].variantOf === qs[i].id) continue;
+    const why = a.title && a.title === b.title ? 'same title' : a.tests && a.tests === b.tests ? 'identical tests' : a.prompt && a.prompt.length > 60 && a.prompt === b.prompt ? 'identical prompt' : null;
+    if (!why) continue;
+    const older = (qs[i].createdAt || '') <= (qs[j].createdAt || '') ? qs[i] : qs[j], newer = older === qs[i] ? qs[j] : qs[i];
+    out.set(newer.id, {of:older, why});
+  }
+  return out;
+}
+function blurbOf(q){
+  const src = q.blurb || q.overview || (q.gates[0] && q.gates[0].prompt) || '';
+  const one = src.replace(/\s+/g, ' ').trim(); if (!one) return '';
+  const cut = one.length > 150 ? one.slice(0, 150).replace(/\s+\S*$/, '') + '…' : one;
+  return cut;
+}
+function dupBadge(d){ return d && h('div',{class:'dup'}, '⚠ Looks like a duplicate of ', h('a',{href:'#/q/' + d.of.id, text:d.of.title}), ` (${d.why}). `, h('span',{class:'hist', text:'Delete one of them; attempts stay with the question they were made on.'})); }
 function renderQuestions(){
   const qs = [...S.questions.values()].filter(q => q.kind !== 'drill').sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
   app.append(renderCountdown());
@@ -523,6 +548,8 @@ function renderQuestions(){
     h('a',{class:'btn primary small', href:'#/q/' + d.qid + '/try', text:'Pick it up'}), h('button',{class:'btn quiet small', text:'Discard', onclick:e => { if (confirm('Discard the unfinished attempt?')){ Draft.clear(); e.target.closest('.resume-box').remove(); } }})));
   app.append(h('div',{class:'page-head'}, h('div',null, h('h2',{text:'Questions'}), h('p',{text:'Each question is a sequence of gated parts, timed separately. Submit a part to store the code, its test result and the time it took.'}))));
   if (!qs.length){ app.append(h('div',{class:'none'}, 'No questions yet. ', h('a',{href:'#/new', text:'Add the first one'}), '.')); return; }
+  const dups = findDuplicates(); const nd = [...dups.keys()].filter(id => (S.questions.get(id) || {}).kind !== 'drill').length;
+  if (nd) app.append(h('p',{class:'hist', style:'margin:-12px 0 16px', text:`${nd} question${nd===1?' looks':'s look'} like a duplicate; see the flagged card${nd===1?'':'s'}.`}));
   const grid = h('div',{class:'qgrid'});
   for (const q of qs){
     const atts = attemptsOf(q.id), last = atts[atts.length-1];
@@ -532,6 +559,8 @@ function renderQuestions(){
     grid.append(h('article',{class:'qcard'},
       h('h3',null, h('a',{href:'#/q/' + q.id, text:q.title})),
       h('div',{class:'qmeta'}, h('span',{class:'diff d-' + q.difficulty, text:q.difficulty[0].toUpperCase() + q.difficulty.slice(1)}), q.topic && h('span',{text:q.topic}), h('span',{text:`${q.gates.length} part${q.gates.length===1?'':'s'}`}), h('span',{text:LANGS[q.lang] || q.lang}), q.variantOf && h('span',{text:'variant of ' + ((S.questions.get(q.variantOf) || {}).title || q.variantOf)})),
+      blurbOf(q) && h('p',{class:'blurb', text:blurbOf(q)}),
+      dupBadge(dups.get(q.id)),
       bar,
       h('div',{class:'stats'},
         h('div',{class:'stat'}, h('b',{text:last ? `${last.passed}/${q.gates.length}` : '–'}), h('span',{text:last ? 'parts passed, last attempt' : 'not attempted'})),
@@ -1449,12 +1478,15 @@ function renderDrills(){
     out);
   app.append(gen);
   if (!drills.length){ app.append(h('p',{class:'none', text:'No drills yet.'})); return; }
+  const dups = findDuplicates();
   const grid = h('div',{class:'qgrid', style:'margin-top:18px'});
   for (const q of drills){
     const atts = attemptsOf(q.id), last = atts[atts.length-1]; const s = last && last.gates.get(q.gates[0].id);
     grid.append(h('article',{class:'qcard'},
       h('h3',null, h('a',{href:'#/q/' + q.id, text:q.title})),
-      h('div',{class:'qmeta'}, h('span',{class:'diff d-' + q.difficulty, text:q.difficulty[0].toUpperCase() + q.difficulty.slice(1)}), q.topic && h('span',{text:q.topic}), q.skills && h('span',{text:q.skills}), h('span',{text:(q.gates[0].minutes || '?') + ' min'})),
+      h('div',{class:'qmeta'}, h('span',{class:'diff d-' + q.difficulty, text:q.difficulty[0].toUpperCase() + q.difficulty.slice(1)}), q.topic && h('span',{text:q.topic}), q.skills && q.skills.length <= 48 && h('span',{text:q.skills}), h('span',{text:(q.gates[0].minutes || '?') + ' min'})),
+      blurbOf(q) && h('p',{class:'blurb', text:blurbOf(q)}),
+      dupBadge(dups.get(q.id)),
       h('div',{class:'stats'},
         h('div',{class:'stat'}, h('b',{text:s ? (gateStatus(s) === 'pass' ? 'Passed' : 'Failed') : '–'}), h('span',{text:s ? 'last attempt' : 'not attempted'})),
         h('div',{class:'stat'}, h('b',{text:s ? fmtSec(s.gateSec) : '–'}), h('span',{text:'time'})),

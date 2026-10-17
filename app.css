@@ -447,3 +447,6 @@ details.draftbox .row{margin-top:8px}
 .take details.earlier{margin-top:6px}
 .padscroll .trainer .chatlog{min-height:60px}
 .ptab .newdot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--bad);margin-left:6px;vertical-align:middle;animation:pulse 1.4s ease-in-out infinite}
+.qcard .blurb{font-size:.9rem;color:var(--muted);line-height:1.45}
+.dup{font-size:.85rem;color:var(--warn);background:color-mix(in srgb, var(--warn) 10%, var(--surface));border-radius:8px;padding:8px 10px}
+.dup a{color:inherit;font-weight:600}
