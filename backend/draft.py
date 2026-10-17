@@ -7,6 +7,8 @@ for a fix. The result carries a verification report so the user can see what
 was checked.
 """
 import json
+import random
+import re
 
 from . import qmd, runner
 
@@ -218,3 +220,134 @@ def drills(focus, count, examples_md, reviewer, minutes=12, hint=""):
 
 def revise(markdown, solution, instruction, reviewer, slug):
     return finish(reviewer.ask_json(revise_prompt(markdown, solution, instruction), SCHEMA), reviewer, slug)
+
+
+# ---------------------------------------------------------------------------
+# OpenAI-style questions
+#
+# The questions reported from OpenAI coding rounds are not puzzle problems.
+# They are small working systems built in stages inside one file, with the
+# interviewer adding a requirement every ten minutes or so: a bank with
+# scheduled payments, a key-value store that grows transactions, a poker hand
+# evaluator that grows a dealer, a package planner that grows cycles and
+# versions. Correctness under escalation, clean state handling and the
+# ability to extend code you wrote twenty minutes ago are what get graded.
+# The archetypes below are the public, widely reported shapes; the generator
+# picks one that the bank does not cover yet and writes a fresh scenario in
+# that shape, never a copy of the reported question.
+# ---------------------------------------------------------------------------
+
+ARCHETYPES = [
+    ("Card game hand evaluation", ["poker", "card", "hand", "blackjack", "deck"], "Parse hands of cards from strings, rank them by category with tie-breaks, then simulate a dealer or a multi-player round, then add a variant rule."),
+    ("In-memory key-value store with transactions", ["key-value", "kv", "transaction", "store with"], "SET/GET/DELETE on a store, then nested BEGIN/COMMIT/ROLLBACK, then a scan or count-by-value, then TTL or versioned reads."),
+    ("Bank or ledger with scheduled operations", ["bank", "account", "ledger", "payment", "transfer"], "Accounts with deposit/transfer/balance, then scheduled or cashback payments that apply at a given time, then merging accounts and ranking by activity."),
+    ("Rate limiter or throttling policy", ["rate limit", "throttle", "limiter"], "Allow or reject requests per key under a window rule, then per-tier limits, then a sliding window or token bucket, then reporting who was throttled."),
+    ("Dependency or package install planner", ["package", "dependency", "install", "topolog"], "Order installs from a dependency list, detect cycles, then version constraints, then minimal reinstall on an upgrade."),
+    ("Text layout or formatting engine", ["justif", "wrap", "layout", "format text", "markdown"], "Wrap words to a width, then full justification, then hyphenation or a table/column layout, then a diff of two layouts."),
+    ("Grid simulation with simultaneous updates", ["grid", "spread", "automata", "life", "infect", "fire"], "A grid rule applied in rounds (spread, decay, immunity), then multiple sources, then an obstacle or immunity rule, then the earliest time a cell changes."),
+    ("Spreadsheet with formulas", ["spreadsheet", "cell", "formula"], "Set cells to numbers, then formulas referencing cells (sums), then recomputation on change, then cycle detection."),
+    ("Time-based or versioned store", ["version", "time-based", "timestamp", "snapshot"], "get(key, time) returning the value as of a time, then snapshots, then range queries, then compaction."),
+    ("File system or directory tree", ["file system", "directory", "folder", "path"], "mkdir/add file/ls with paths, then sizes and moves, then find by pattern, then quotas."),
+    ("Job scheduler or task queue", ["scheduler", "job", "queue", "task", "cron"], "Submit jobs with priorities and durations, then dependencies, then workers with capacity, then preemption or deadlines."),
+    ("Cache with eviction policy", ["cache", "lru", "lfu", "ttl", "evict"], "get/put with capacity and LRU, then TTL, then LFU or weighted entries, then statistics."),
+    ("Tokenizer or small language processor", ["tokeniz", "bpe", "parser", "calculator", "expression"], "Tokenize text by rules, then merges (BPE-like), then decode, then an expression evaluator with precedence."),
+    ("Inventory, orders or matching", ["inventory", "order", "matching", "marketplace", "auction"], "Add stock and orders, then partial fills with priority, then cancellation, then reporting."),
+    ("Log aggregation or metrics", ["log", "metric", "aggregat", "event", "analytics"], "Ingest timestamped events, then windowed counts, then top-k by key, then late/out-of-order events."),
+    ("Elevator, parking or resource simulation", ["elevator", "parking", "booking", "reservation", "seat"], "Requests for a resource over time, then assignment policy, then capacity and waiting, then fairness or cost."),
+    ("Resumable or chunked iterator", ["iterator", "stream", "chunk", "pagination", "resum"], "Iterate a dataset in chunks with a cursor, then resume after failure, then filtering/merging streams, then backpressure."),
+    ("Unix-like command pipeline", ["command", "shell", "pipeline", "grep", "sort"], "Implement a few text commands over lines, then piping them, then flags, then a tiny command parser."),
+    ("Voting, ranking or leaderboard", ["vote", "rank", "leaderboard", "score", "election"], "Record votes or scores, then rankings with tie-breaks, then time-decayed or weighted scores, then audit of changes."),
+    ("Routing or URL dispatch", ["router", "route", "url", "dispatch", "endpoint"], "Register routes with literal paths, then parameters and wildcards, then priority/overlaps, then middleware ordering."),
+]
+
+
+def pick_archetype(existing_titles, hint="", rng=None):
+    rng = rng or random.Random()
+    titles = " ".join(t.lower() for t in existing_titles)
+    hint_l = hint.lower()
+    if hint_l:
+        for name, kws, _ in ARCHETYPES:
+            if any(k in hint_l for k in kws) or name.lower() in hint_l:
+                return (name, kws, ARCHETYPES[[a[0] for a in ARCHETYPES].index(name)][2])
+    uncovered = [a for a in ARCHETYPES if not any(k in titles for k in a[1])]
+    return rng.choice(uncovered or ARCHETYPES)
+
+
+OPENAI_STYLE = """What makes a question OpenAI-style (write it this way):
+- It is a small working system built in ONE file over 45-60 minutes, in 3-5 parts, each part a new requirement an interviewer would add after seeing the previous one work. Not a puzzle, not a LeetCode trick, no need for a clever algorithm; the difficulty is in keeping state correct and code extensible as rules pile up.
+- Part 1 is deliberately simple (a strong candidate finishes it in 8-10 minutes) and establishes the data model. Parts 2-3 are where candidates fail: a rule that interacts with earlier state (ordering, time, nesting, partial application, tie-breaks). Part 4-5 are reached by few and reward design.
+- Inputs are concrete and realistic: lists of command strings or tuples, timestamps as integers, names as strings. Outputs are plain values the tests can compare. Each part's entry function can take the full command list so earlier parts keep being tested.
+- The spoken prompt per part is short and leaves rules unstated (what happens on a duplicate, on an unknown key, on ties, on a zero amount), so the candidate must ask; the spec block pins every one of them because the hidden tests depend on them.
+- Edge cases that matter in these interviews: operations on missing entities, repeated operations, ordering by time then by name, empty input, large counts, operations arriving out of order.
+- Avoid: graph theory for its own sake, dynamic programming, math puzzles, bit tricks, anything where the whole difficulty is knowing one algorithm."""
+
+
+def openai_prompt(archetype, examples_md, hint="", avoid_titles=()):
+    name, _, shape = archetype
+    ex = "\n\n".join("<example>\n%s\n</example>" % e.strip()[:9000] for e in examples_md[:2])
+    style = ("Format and tone reference, from the user's own questions (do not reuse their scenarios):\n" + ex) if examples_md else ""
+    avoid = ("Scenarios already in the user's bank, do not reuse them: " + "; ".join(list(avoid_titles)[:40]) + ".") if avoid_titles else ""
+    return f"""You write coding interview questions of the kind OpenAI asks in its coding rounds, for a candidate practising for that interview.
+
+{OPENAI_STYLE}
+
+Write ONE new question of the archetype "{name}": {shape}
+Invent a fresh, specific scenario in that shape (a real-sounding product or domain, named entities, plausible numbers). {avoid}
+{('Guidance from the user: ' + hint.strip()[:1500]) if hint.strip() else ''}
+
+Rules: Python 3, standard library only; one entry function per part, JSON-serialisable arguments and return values (lists of command lists are fine); 6-10 hidden tests per part including the edge cases above; time budgets that sum to 45-60 minutes with part 1 the shortest; a complete reference solution that passes every test and reads like a strong candidate's code; set `source: OpenAI-style ({name})` in the front matter. {VARIANT_FORMAT_NOTE}
+{style}
+
+Reply with only one JSON object: {{"markdown": "<the question>", "solution": "<reference solution .py>", "notes": "<the one rule candidates most often get wrong in this question, one sentence>"}}
+
+The Markdown format, for reference:
+{FORMAT}"""
+
+
+def openai_question(existing_titles, examples_md, reviewer, hint=""):
+    arch = pick_archetype(existing_titles, hint)
+    d = finish(reviewer.ask_json(openai_prompt(arch, examples_md, hint, existing_titles), SCHEMA), reviewer)
+    d["archetype"] = arch[0]
+    return d
+
+
+def openai_drills_prompt(count, minutes, existing_titles, hint=""):
+    rng = random.Random()
+    picks = []
+    pool = ARCHETYPES[:]
+    rng.shuffle(pool)
+    titles = " ".join(t.lower() for t in existing_titles)
+    for a in sorted(pool, key=lambda a: any(k in titles for k in a[1])):
+        picks.append(a)
+        if len(picks) >= count:
+            break
+    shapes = "\n".join("- %s: %s" % (a[0], a[2]) for a in picks)
+    return f"""You write short coding drills for a candidate practising for OpenAI's coding interview. Each drill is ONE part, about {minutes} minutes, and is the kind of single step those interviews are made of: implement one piece of a small system with concrete command-style input and a clear output, where the difficulty is getting the rules and the state right, not knowing an algorithm.
+
+{OPENAI_STYLE}
+
+Write {count} drills, one per archetype below, each with its own fresh scenario (do not reuse scenarios from the candidate's bank: {"; ".join(list(existing_titles)[:40]) or "none"}):
+{shapes}
+{('Guidance from the user: ' + hint.strip()[:1500]) if hint.strip() else ''}
+
+Each drill: a short spoken prompt that leaves two or three rules unstated, a spec block that pins them, 6-10 hidden tests with the edge cases that matter (missing entities, repeats, ties, empty input), a complete Python 3 standard-library reference solution that passes every test. Front matter: `kind: drill`, `skills: OpenAI-style`, `source: OpenAI-style (<archetype>)`; the part has `minutes: {minutes}`.
+
+Reply with only one JSON object: {{"questions": [{{"markdown": "<drill 1>", "solution": "<reference solution>", "notes": ""}}, ...]}}
+
+The Markdown format:
+{FORMAT}"""
+
+
+def openai_drills(count, minutes, existing_titles, reviewer, hint=""):
+    raw = reviewer.ask_json(openai_drills_prompt(count, minutes, existing_titles, hint), DRILLS_SCHEMA)
+    out = []
+    for item in (raw.get("questions") or [])[:count]:
+        try:
+            d = finish(item, reviewer)
+            d["question"]["kind"] = "drill"
+            sk = str(d["question"].get("skills") or "")
+            d["question"]["skills"] = sk if "openai" in sk.lower() else ("OpenAI-style; " + sk if sk else "OpenAI-style")
+            out.append(d)
+        except Exception as e:  # noqa: BLE001
+            out.append({"error": str(e)})
+    return out

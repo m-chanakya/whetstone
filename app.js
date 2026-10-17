@@ -546,10 +546,14 @@ function renderQuestions(){
   const d = Draft.load();
   if (d && S.questions.get(d.qid)) app.append(h('div',{class:'resume-box'}, h('div',null, h('b',{text:`Unfinished attempt: ${S.questions.get(d.qid).title}`}), h('span',{class:'hist', text:` · part ${d.gi + 1}, ${fmtSec((d.savedAt - (d.pausedTotal || 0) - d.startedAt)/1000)} on the clock, saved ${fmtDateTime(new Date(d.savedAt).toISOString())}`})), h('span',{class:'spacer'}),
     h('a',{class:'btn primary small', href:'#/q/' + d.qid + '/try', text:'Pick it up'}), h('button',{class:'btn quiet small', text:'Discard', onclick:e => { if (confirm('Discard the unfinished attempt?')){ Draft.clear(); e.target.closest('.resume-box').remove(); } }})));
-  app.append(h('div',{class:'page-head'}, h('div',null, h('h2',{text:'Questions'}), h('p',{text:'Each question is a sequence of gated parts, timed separately. Submit a part to store the code, its test result and the time it took.'}))));
+  app.append(h('div',{class:'page-head'}, h('div',null, h('h2',{text:'Questions'}), h('p',{text:'Each question is a sequence of gated parts, timed separately. Submit a part to store the code, its test result and the time it took.'})),
+    S.health && S.health.hasKey && h('button',{class:'btn', id:'oaBtn', text:'New OpenAI-style question', title:'Claude writes a small-system question in the shape OpenAI asks (bank, KV store, card game, planner…), picking a shape your bank does not cover yet', onclick:e => newOpenAIQuestion(e.target)})));
   if (!qs.length){ app.append(h('div',{class:'none'}, 'No questions yet. ', h('a',{href:'#/new', text:'Add the first one'}), '.')); return; }
-  const dups = findDuplicates(); const nd = [...dups.keys()].filter(id => (S.questions.get(id) || {}).kind !== 'drill').length;
-  if (nd) app.append(h('p',{class:'hist', style:'margin:-12px 0 16px', text:`${nd} question${nd===1?' looks':'s look'} like a duplicate; see the flagged card${nd===1?'':'s'}.`}));
+  const dups = findDuplicates(); const dupIds = [...dups.keys()].filter(id => (S.questions.get(id) || {}).kind !== 'drill');
+  const replaceable = dupIds.filter(id => !attemptsOf(id).length);
+  if (dupIds.length) app.append(h('div',{class:'dupbar'}, h('span',{text:`${dupIds.length} question${dupIds.length===1?' looks':'s look'} like a duplicate (flagged below).`}),
+    replaceable.length > 0 && S.health && S.health.hasKey && h('button',{class:'btn small', id:'replBtn', text:`Replace ${replaceable.length} unattempted duplicate${replaceable.length===1?'':'s'} with OpenAI-style questions`, onclick:e => replaceDuplicates(e.target, replaceable)}),
+    h('span',{class:'hist', id:'replNote'})));
   const grid = h('div',{class:'qgrid'});
   for (const q of qs){
     const atts = attemptsOf(q.id), last = atts[atts.length-1];
@@ -595,6 +599,27 @@ function renderCountdown(){
   }
   draw(); if (planInt) clearInterval(planInt); planInt = setInterval(draw, 15000);
   return outer;
+}
+
+async function newOpenAIQuestion(btn, hint){
+  const fulls = [...S.questions.values()].filter(q => q.kind !== 'drill').slice(0, 2).map(q => q.id);
+  btn.disabled = true; const was = btn.textContent; btn.textContent = 'Writing an OpenAI-style question (2–4 min)…';
+  try { const r = await API.call('POST', '/api/questions/openai', {examples:fulls, hint:hint || ''}); await loadIndex(); toast(`${r.question.title} (${r.archetype}) ${r.report.ok ? 'verified and saved.' : 'saved; some tests did not verify, check its Edit page.'}`); location.hash = '#/q/' + r.question.id; }
+  catch(err){ toast(err.message); btn.disabled = false; btn.textContent = was; }
+}
+async function replaceDuplicates(btn, ids){
+  if (!confirm(`Delete ${ids.length} unattempted duplicate question${ids.length===1?'':'s'} and write ${ids.length} new OpenAI-style question${ids.length===1?'':'s'} in their place? Each takes two to four minutes.`)) return;
+  btn.disabled = true; const note = $('#replNote');
+  const fulls = [...S.questions.values()].filter(q => q.kind !== 'drill' && !ids.includes(q.id)).slice(0, 2).map(q => q.id);
+  let made = 0;
+  for (let i = 0; i < ids.length; i++){
+    const title = (S.questions.get(ids[i]) || {}).title || ids[i];
+    note.textContent = `${i + 1} of ${ids.length}: removing “${title}”, writing a replacement…`;
+    try { await API.deleteQuestion(ids[i]); } catch(e){ note.textContent = 'Could not delete ' + title + ': ' + e.message; continue; }
+    try { const r = await API.call('POST', '/api/questions/openai', {examples:fulls}); made++; note.textContent = `${i + 1} of ${ids.length}: added “${r.question.title}” (${r.archetype}).`; }
+    catch(e){ note.textContent = `Removed “${title}” but writing a replacement failed: ${e.message}`; }
+  }
+  await loadIndex(); toast(`Replaced ${made} of ${ids.length}.`); render();
 }
 
 /* ---------- question detail / history ---------- */
@@ -1037,13 +1062,14 @@ function gymFocusOptions(){
   const drills = [...S.questions.values()].filter(q => q.kind === 'drill');
   const fulls = [...S.questions.values()].filter(q => q.kind !== 'drill');
   const have = new Map(); for (const d of drills) for (const k of (d.skills || '').split(/[;,]/).map(x => x.trim()).filter(Boolean)) have.set(k, (have.get(k) || 0) + 1);
-  const opts = [['mixed', 'Mixed (unattempted drills, hardest gaps first)']];
+  const opts = [['mixed', 'Mixed (unattempted drills, hardest gaps first)'], ['openai', 'OpenAI-style (small-system steps)']];
   for (const [k,[n]] of Object.entries(SKILLS)) opts.push(['skill:' + k, n + (have.has(n) ? ` (${have.get(n)} drill${have.get(n)===1?'':'s'})` : '')]);
   for (const tp of [...new Set([...fulls.map(q => q.topic), ...drills.map(q => q.topic)].filter(Boolean))]) opts.push(['topic:' + tp, tp]);
   return opts;
 }
 function drillMatches(q, focus){
   if (focus === 'mixed') return true;
+  if (focus === 'openai') return /openai/i.test(q.skills || '') || /openai/i.test(q.source || '');
   if (focus.startsWith('topic:')) return (q.topic || '') === focus.slice(6);
   const name = SKILLS[focus.slice(6)] ? SKILLS[focus.slice(6)][0].toLowerCase() : focus.slice(6).toLowerCase();
   return (q.skills || '').toLowerCase().includes(name) || (q.title || '').toLowerCase().includes(name);
@@ -1089,7 +1115,7 @@ async function startGym(btn){
       const need = count - pick.length; note.textContent = `Claude is writing ${need} drill${need===1?'':'s'} (one to three minutes each)…`;
       const fulls = [...S.questions.values()].filter(q => q.kind !== 'drill');
       const focusText = focus === 'mixed' ? 'a mix: ' + ([...gapCount.entries()].sort((a,b) => b[1]-a[1]).slice(0,2).map(([g]) => (SKILLS[g] || [g])[0]).join(', ') || 'core data structures and simulation') : focus.startsWith('skill:') ? SKILLS[focus.slice(6)][0] + ': ' + SKILLS[focus.slice(6)][1] : focus.slice(6);
-      try { const r = await API.call('POST', '/api/drills/generate', {focus:focusText, count:need, minutes, examples:fulls.slice(0,2).map(q => q.id)}); await loadIndex(); pick = pick.map(q => S.questions.get(q.id) || q).concat(r.made.map(m => S.questions.get(m.question.id)).filter(Boolean)).slice(0, count); }
+      try { const r = await API.call('POST', '/api/drills/generate', {focus:focus === 'openai' ? 'OpenAI-style' : focusText, openai:focus === 'openai' || focus === 'mixed', count:need, minutes, examples:fulls.slice(0,2).map(q => q.id)}); await loadIndex(); pick = pick.map(q => S.questions.get(q.id) || q).concat(r.made.map(m => S.questions.get(m.question.id)).filter(Boolean)).slice(0, count); }
       catch(err){ note.textContent = 'Could not write drills: ' + err.message; if (!pick.length){ btn.disabled = false; return; } }
     }
   }
@@ -1456,9 +1482,9 @@ function renderAnalytics(qidFilter){
 function renderDrills(){
   const drills = [...S.questions.values()].filter(q => q.kind === 'drill').sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
   const fulls = [...S.questions.values()].filter(q => q.kind !== 'drill');
-  app.append(h('div',{class:'page-head'}, h('div',null, h('h2',{text:'Drills'}), h('p',{text:'Short single-part exercises, 10–15 minutes each, for when you want reps rather than a full round. Claude writes them around a skill or topic, in the style of your own questions, and verifies the tests before saving.'})), h('div',{class:'row'}, h('a',{class:'btn primary', href:'#/gym', text:'Go to the gym'}), h('a',{class:'btn', href:'#/analytics#drills', text:'Drill analytics'}))));
-  const focusOpts = [...Object.entries(SKILLS).map(([k,[n]]) => ['skill:' + k, n + ' (skill)']), ...[...new Set(fulls.map(q => q.topic).filter(Boolean))].map(t => ['topic:' + t, t + ' (topic)'])];
-  const pre = S.drillFocus ? 'skill:' + S.drillFocus : focusOpts[0] && focusOpts[0][0]; S.drillFocus = null;
+  app.append(h('div',{class:'page-head'}, h('div',null, h('h2',{text:'Drills'}), h('p',{text:'Short single-part exercises, 10–15 minutes each, for when you want reps rather than a full round. OpenAI-style drills are one step of a small system (a store, a ledger, a planner, a card game) with concrete command input; or pick a skill or topic. Claude verifies every test before saving.'})), h('div',{class:'row'}, h('a',{class:'btn primary', href:'#/gym', text:'Go to the gym'}), h('a',{class:'btn', href:'#/analytics#drills', text:'Drill analytics'}))));
+  const focusOpts = [['openai', 'OpenAI-style: one step of a small system (recommended)'], ...Object.entries(SKILLS).map(([k,[n]]) => ['skill:' + k, n + ' (skill)']), ...[...new Set(fulls.map(q => q.topic).filter(Boolean))].map(t => ['topic:' + t, t + ' (topic)'])];
+  const pre = S.drillFocus ? 'skill:' + S.drillFocus : 'openai'; S.drillFocus = null;
   const out = h('div');
   const gen = h('details',{class:'draftbox', open:true},
     h('summary',null, h('strong',{text:'Make new drills'})),
@@ -1469,9 +1495,9 @@ function renderDrills(){
     h('label',{class:'field', style:'margin-top:8px'}, h('span',{text:'Anything specific (optional)'}), h('input',{type:'text', id:'drHint', placeholder:'e.g. grid simulations with simultaneous updates; or a custom focus if you picked “Something else”'})),
     h('div',{class:'row', style:'margin-top:8px'}, h('button',{class:'btn primary', id:'drBtn', disabled:!(S.health && S.health.hasKey), text:'Write drills with Claude', onclick:async e => {
       const sel = $('#drFocus').value, hint = $('#drHint').value.trim();
-      const focus = sel === 'custom' ? (hint || 'general problem solving') : sel.startsWith('skill:') ? SKILLS[sel.slice(6)][0] + ': ' + SKILLS[sel.slice(6)][1] : sel.slice(6);
+      const focus = sel === 'openai' ? 'OpenAI-style' : sel === 'custom' ? (hint || 'general problem solving') : sel.startsWith('skill:') ? SKILLS[sel.slice(6)][0] + ': ' + SKILLS[sel.slice(6)][1] : sel.slice(6);
       e.target.disabled = true; out.replaceChildren(h('div',{class:'thinking'}, h('span',{class:'dot'}), `Claude is writing ${$('#drCount').value} drill(s) and the server is verifying each one. Two to five minutes.`));
-      try { const r = await API.call('POST', '/api/drills/generate', {focus, count:Number($('#drCount').value), minutes:Number($('#drMin').value), hint, examples:fulls.slice(0,2).map(q => q.id)});
+      try { const r = await API.call('POST', '/api/drills/generate', {focus, openai:sel === 'openai', count:Number($('#drCount').value), minutes:Number($('#drMin').value), hint, examples:fulls.slice(0,2).map(q => q.id)});
         await loadIndex(); out.replaceChildren(); toast(`${r.made.length} drill${r.made.length===1?'':'s'} ready` + (r.errors.length ? `, ${r.errors.length} failed` : '') + '.'); render(); }
       catch(err){ out.replaceChildren(h('p',{class:'fail', text:err.message})); e.target.disabled = false; }
     }}), !(S.health && S.health.hasKey) && h('span',{class:'hist', text:'Needs Claude on the server: see Settings.'})),

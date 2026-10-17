@@ -450,3 +450,4 @@ details.draftbox .row{margin-top:8px}
 .qcard .blurb{font-size:.9rem;color:var(--muted);line-height:1.45}
 .dup{font-size:.85rem;color:var(--warn);background:color-mix(in srgb, var(--warn) 10%, var(--surface));border-radius:8px;padding:8px 10px}
 .dup a{color:inherit;font-weight:600}
+.dupbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:-12px 0 18px;padding:10px 14px;border-radius:10px;background:color-mix(in srgb, var(--warn) 10%, var(--surface));font-size:.92rem}

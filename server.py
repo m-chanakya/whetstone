@@ -675,6 +675,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(502, {"error": "generation failed: %s" % str(e)[:300]})
             q = self.app.save_generated(d)
             return self._json(200, {"question": summarize_question(q), "report": d["report"], "notes": d["notes"]})
+        if p == "/api/questions/openai":
+            if not self.app.can_review:
+                return self._json(409, {"error": "Generating needs Claude: see Settings."})
+            body = self._body()
+            titles = [q.get("title") or "" for q in st.questions()]
+            examples = []
+            for other in (body.get("examples") or [])[:2]:
+                m2, _ = self.app.question_markdown(str(other))
+                if m2:
+                    examples.append(m2)
+            try:
+                d = drafter.openai_question(titles, examples, self.app.reviewer, str(body.get("hint") or ""))
+            except Exception as e:  # noqa: BLE001
+                return self._json(502, {"error": "generation failed: %s" % str(e)[:300]})
+            q = self.app.save_generated(d)
+            return self._json(200, {"question": summarize_question(q), "report": d["report"], "notes": d["notes"], "archetype": d.get("archetype")})
         if p == "/api/drills/generate":
             if not self.app.can_review:
                 return self._json(409, {"error": "Generating needs Claude: see Settings."})
@@ -682,6 +698,20 @@ class Handler(BaseHTTPRequestHandler):
             focus = str(body.get("focus") or "").strip()[:200] or "general problem solving"
             count = max(1, min(5, int(body.get("count") or 3)))
             minutes = max(5, min(30, int(body.get("minutes") or 12)))
+            if body.get("openai"):
+                titles = [q.get("title") or "" for q in st.questions()]
+                try:
+                    ds = drafter.openai_drills(count, minutes, titles, self.app.reviewer, str(body.get("hint") or ""))
+                except Exception as e:  # noqa: BLE001
+                    return self._json(502, {"error": "generation failed: %s" % str(e)[:300]})
+                made, errors = [], []
+                for d in ds:
+                    if d.get("error"):
+                        errors.append(d["error"])
+                        continue
+                    q = self.app.save_generated(d)
+                    made.append({"question": summarize_question(q), "report": d["report"]})
+                return self._json(200, {"made": made, "errors": errors})
             examples = []
             for other in (body.get("examples") or [])[:2]:
                 m2, _ = self.app.question_markdown(str(other))
